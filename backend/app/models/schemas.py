@@ -21,6 +21,14 @@ class DocumentSummary(BaseModel):
     version_group: str | None = None
 
 
+class DocumentUploadResponse(BaseModel):
+    stored_filename: str
+    path: str
+    duplicate: bool = False
+    message: str
+    document: DocumentSummary | None = None
+
+
 class RequestHistoryEntry(BaseModel):
     history_id: str
     kind: str

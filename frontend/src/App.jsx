@@ -12,19 +12,85 @@ import {
   fetchHistory,
   fetchHistoryDetail,
   fetchIndexSettings,
+  uploadDocument,
   updateIndexSettings
 } from "./api";
 
 const DEFAULT_DRUG = "Infliximab";
-const MAX_MESSAGES = 60;
+const LOCAL_STATE_KEY = "doc_parsers_frontend_state_v2";
+const MAX_LOCAL_HISTORY = 8;
 
 const TRACKER_TABS = [
   { id: "home", label: "Home" },
+  { id: "upload", label: "Upload" },
   { id: "ask", label: "Ask" },
   { id: "compare", label: "Compare" },
   { id: "changes", label: "Changes" },
   { id: "history", label: "History" }
 ];
+
+const TAB_EXPLANATIONS = {
+  home: {
+    eyebrow: "Overview",
+    title: "Use Home as the guided entry point",
+    description: "Home groups the strongest validated scenarios and lets you open the right tracker with the right context prefilled.",
+    bullets: [
+      "Choose a scenario to preload the relevant tracker, drug, payer set, and starter prompt.",
+      "Nothing auto-runs from Home, so you can edit the language naturally before submitting.",
+      "The selected use case and the current workspace state are restored from localStorage."
+    ]
+  },
+  upload: {
+    eyebrow: "Ingest",
+    title: "Upload a new payer policy PDF",
+    description: "Upload saves the PDF into the local docs corpus so it can later be indexed, compared, and cited as evidence.",
+    bullets: [
+      "Files are stored locally in docs and become available to the rest of the app after refresh.",
+      "Duplicate PDFs are detected before the file is added again.",
+      "Recent upload activity is retained locally so the tab remembers what you were doing after refresh."
+    ]
+  },
+  ask: {
+    eyebrow: "Single Payer",
+    title: "Ask one policy question at a time",
+    description: "Ask is optimized for readable, evidence-grounded summaries for one payer and one drug at a time.",
+    bullets: [
+      "The answer opens with short bullet points before showing the full extracted explanation.",
+      "Each evidence snippet links back to the source PDF page and can generate a page summary.",
+      "The current prompt, results, and recent Ask activity are retained in localStorage."
+    ]
+  },
+  compare: {
+    eyebrow: "Cross Payer",
+    title: "Compare normalized policy outputs",
+    description: "Compare lines up multiple payers on the same drug so coverage, prior auth, and step-therapy differences are easy to explain.",
+    bullets: [
+      "Readable payer cards appear before the raw comparison table.",
+      "The compare state is retained locally so a refresh does not wipe the working result.",
+      "CSV export uses the current normalized compare output."
+    ]
+  },
+  changes: {
+    eyebrow: "Version Review",
+    title: "Track what changed between policy versions",
+    description: "Changes focuses on valid document pairs so you can explain meaningful policy deltas without rereading the entire PDF.",
+    bullets: [
+      "Detected valid pairs reduce the chance of picking a broken or duplicate version pair.",
+      "Readable bullets summarize the meaningful changes before the field-level diff list.",
+      "The selected version pair, question, and recent change runs are retained in localStorage."
+    ]
+  },
+  history: {
+    eyebrow: "Audit Trail",
+    title: "Review backend history and local session memory",
+    description: "History combines the saved backend runs with the lighter client-side session trail stored in localStorage.",
+    bullets: [
+      "Backend history contains the full saved request and response payloads.",
+      "Local session history tracks recent activity by tab even after a browser refresh.",
+      "You can reopen a stored explanation without rerunning the analysis."
+    ]
+  }
+};
 
 const USECASE_SECTIONS = [
   {
@@ -152,6 +218,55 @@ const USECASE_SECTIONS = [
   }
 ];
 
+const HOME_DIFFERENTIATORS = [
+  {
+    title: "Structure-Aware Retrieval",
+    body:
+      "Generic PDF tools usually chunk flat text. DOC Parsers uses PageIndex to retrieve policy sections like Criteria for Initial Approval, Coverage Rationale, and Policy History before extraction starts."
+  },
+  {
+    title: "Policy-Native Outputs",
+    body:
+      "Instead of returning a vague summary, the app normalizes coverage status, prior authorization, step therapy, site of care, effective date, and version-level changes into analyst-friendly outputs."
+  },
+  {
+    title: "Evidence and Auditability",
+    body:
+      "Each answer carries evidence snippets, PDF page links, backend history, and local session memory, so the workflow is reviewable instead of being a disposable chat response."
+  },
+  {
+    title: "Cross-Document Intelligence",
+    body:
+      "Neo4j adds graph context across payers, policies, drugs, versions, requirements, and evidence, which makes compare and change tracking more useful than a single-document parser."
+  }
+];
+
+const HOME_FLOW = [
+  "Upload or select a payer policy PDF from the local corpus.",
+  "Warm PageIndex so the backend can retrieve the right sections instead of random PDF text.",
+  "Ask a single-payer question, Compare payers, or review Changes across versions.",
+  "Open History to revisit saved backend runs and local session activity."
+];
+
+const HOME_ARCHITECTURE = [
+  {
+    title: "React workspace",
+    detail: "Separate tabs for Ask, Compare, Changes, Upload, and History keep each workflow isolated and reusable."
+  },
+  {
+    title: "FastAPI orchestration",
+    detail: "The backend coordinates document discovery, retrieval, OpenAI extraction, caching, upload, and persisted run history."
+  },
+  {
+    title: "PageIndex retrieval",
+    detail: "Section-aware indexing turns messy PDFs into navigable structures so extraction starts from policy logic instead of random chunks."
+  },
+  {
+    title: "SQLite + Neo4j persistence",
+    detail: "Local-first operational storage is paired with graph relationships across payers, drugs, versions, requirements, and evidence."
+  }
+];
+
 function normalizeText(value) {
   return String(value || "").trim().toLowerCase();
 }
@@ -164,14 +279,12 @@ function formatList(items) {
   return items?.filter(Boolean).join(", ") || "none";
 }
 
-function createMessage(role, kind, payload = {}) {
-  return {
-    id: `${role}-${kind}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-    role,
-    kind,
-    timestamp: new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }),
-    ...payload
-  };
+function safeJsonParse(value, fallback = null) {
+  try {
+    return JSON.parse(value);
+  } catch {
+    return fallback;
+  }
 }
 
 function buildCompareHighlights(rows = []) {
@@ -294,22 +407,42 @@ function compactValue(value) {
   return String(value || "unknown");
 }
 
+function defaultLocalTabHistory() {
+  return {
+    home: [],
+    upload: [],
+    ask: [],
+    compare: [],
+    changes: [],
+    history: []
+  };
+}
+
+function mergeLocalTabHistory(value) {
+  const seeded = defaultLocalTabHistory();
+  if (!value || typeof value !== "object") return seeded;
+  for (const key of Object.keys(seeded)) {
+    seeded[key] = Array.isArray(value[key]) ? value[key].slice(0, MAX_LOCAL_HISTORY) : [];
+  }
+  return seeded;
+}
+
 function buildReadableAskSummary(record) {
   const parts = [];
-  parts.push(`Coverage is ${record.coverage_status}.`);
+  parts.push(`Coverage: ${record.coverage_status}`);
   if (record.prior_auth_required !== "unknown") {
-    parts.push(`Prior authorization is ${record.prior_auth_required}.`);
+    parts.push(`Prior authorization: ${record.prior_auth_required}`);
   }
   if (record.step_therapy !== "unknown") {
-    parts.push(`Step therapy is noted.`);
+    parts.push(`Step therapy: ${record.step_therapy}`);
   }
   if (record.site_of_care !== "unknown") {
-    parts.push(`Site of care guidance is present.`);
+    parts.push(`Site of care: ${record.site_of_care}`);
   }
   if (record.effective_date !== "unknown" && record.effective_date !== "not stated in snippets") {
-    parts.push(`Effective date: ${record.effective_date}.`);
+    parts.push(`Effective date: ${record.effective_date}`);
   }
-  return parts.join(" ");
+  return parts;
 }
 
 function buildAskHighlights(record) {
@@ -336,18 +469,163 @@ function extractHistoryExplanation(detail) {
   const payload = detail?.response_payload || {};
   if (detail.kind === "ask") {
     const records = payload.records || [];
-    if (!records.length) return detail.summary;
-    return `Returned ${records.length} payer records. ${records[0].payer}: ${buildReadableAskSummary(records[0])}`;
+    if (!records.length) return [detail.summary];
+    return [
+      `Returned ${records.length} payer record${records.length === 1 ? "" : "s"}`,
+      `${records[0].payer}: ${buildReadableAskSummary(records[0]).slice(0, 2).join(" · ")}`
+    ];
   }
   if (detail.kind === "compare") {
     const rows = payload.rows || [];
-    if (!rows.length) return detail.summary;
-    return `Compared ${rows.length} payer rows. ${rows.map((row) => `${row.payer}: ${row.coverage}`).join(" | ")}`;
+    if (!rows.length) return [detail.summary];
+    return [
+      `Compared ${rows.length} payer rows`,
+      ...rows.slice(0, 3).map((row) => `${row.payer}: ${row.coverage}`)
+    ];
   }
   if (detail.kind === "changes") {
-    return payload.narrative_summary || detail.summary;
+    return buildBulletListFromText(payload.narrative_summary || detail.summary);
   }
-  return detail.summary;
+  return [detail.summary];
+}
+
+function buildBulletListFromText(text) {
+  const cleaned = String(text || "").trim();
+  if (!cleaned) return [];
+  const segments = cleaned
+    .split(/(?<=[.!?])\s+/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+  return segments.length ? segments : [cleaned];
+}
+
+function buildCompareCardPoints(row) {
+  return [
+    `Coverage: ${row.coverage}`,
+    `Prior auth: ${row.prior_auth}`,
+    `Step therapy: ${row.step_therapy}`,
+    `Site of care: ${row.site_of_care}`,
+    `Effective date: ${row.effective_date}`
+  ].filter((item) => !item.endsWith(": unknown") && !item.endsWith(": not stated in snippets"));
+}
+
+function buildChangeSummaryPoints(changeResult) {
+  const points = buildBulletListFromText(changeResult.narrative_summary);
+  if (changeResult.diffs?.length) {
+    points.unshift(`Detected ${changeResult.diffs.length} changed field${changeResult.diffs.length === 1 ? "" : "s"}`);
+  }
+  return points;
+}
+
+function createLocalHistoryEntry(tab, title, points, meta = "") {
+  return {
+    id: `${tab}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+    title,
+    points: (points || []).filter(Boolean).slice(0, 4),
+    meta,
+    createdAt: new Date().toISOString()
+  };
+}
+
+function buildAskLocalHistory(record, question) {
+  return createLocalHistoryEntry(
+    "ask",
+    `${record.payer} · ${record.drug_name_generic || record.drug_name_brand || "policy answer"}`,
+    [`Prompt: ${question}`, ...buildReadableAskSummary(record).slice(0, 3)],
+    record.status
+  );
+}
+
+function buildCompareLocalHistory(result, drugName, question) {
+  return createLocalHistoryEntry(
+    "compare",
+    `${drugName} compare`,
+    [
+      `Prompt: ${question}`,
+      `Returned ${result.rows.length} payer row${result.rows.length === 1 ? "" : "s"}`,
+      `Payers: ${formatList(result.rows.map((row) => row.payer))}`
+    ],
+    result.graph_summary?.status_message || "compare"
+  );
+}
+
+function buildChangesLocalHistory(result, oldLabel, newLabel, question) {
+  return createLocalHistoryEntry(
+    "changes",
+    `${oldLabel} → ${newLabel}`,
+    [`Prompt: ${question}`, ...buildChangeSummaryPoints(result).slice(0, 3)],
+    `${result.diffs?.length || 0} changes`
+  );
+}
+
+function useCasesForTab(tabId) {
+  return USECASE_SECTIONS.find((section) => section.id === tabId)?.cases || [];
+}
+
+function SummaryList({ title, items }) {
+  if (!items?.length) return null;
+  return (
+    <div className="summary-band">
+      {title ? <strong>{title}</strong> : null}
+      <ul className="summary-list">
+        {items.map((item) => (
+          <li key={item}>{item}</li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+function ExplanationCard({ tab }) {
+  const explanation = TAB_EXPLANATIONS[tab];
+  if (!explanation) return null;
+  return (
+    <section className="panel-card explanation-card">
+      <div className="section-header">
+        <div>
+          <span className="eyebrow">{explanation.eyebrow}</span>
+          <h2>{explanation.title}</h2>
+          <p className="muted">{explanation.description}</p>
+        </div>
+        <StatusPill tone="neutral">{TRACKER_TABS.find((item) => item.id === tab)?.label || tab}</StatusPill>
+      </div>
+      <SummaryList title="How this tab works" items={explanation.bullets} />
+    </section>
+  );
+}
+
+function LocalHistoryCard({ tab, entries }) {
+  const label = TRACKER_TABS.find((item) => item.id === tab)?.label || tab;
+  if (!entries.length) return null;
+  return (
+    <article className="panel-card">
+      <div className="result-head">
+        <div>
+          <h3>{label} local session history</h3>
+          <p className="muted">Restored from localStorage for this browser.</p>
+        </div>
+        <StatusPill tone="neutral">{entries.length}</StatusPill>
+      </div>
+      <div className="local-history-list">
+        {entries.map((entry) => (
+          <article key={entry.id} className="local-history-item">
+            <div className="result-head">
+              <div>
+                <h4>{entry.title}</h4>
+                <p className="muted">{new Date(entry.createdAt).toLocaleString()}</p>
+              </div>
+              {entry.meta ? <StatusPill tone="neutral">{entry.meta}</StatusPill> : null}
+            </div>
+            <ul className="summary-list compact">
+              {entry.points.map((point) => (
+                <li key={point}>{point}</li>
+              ))}
+            </ul>
+          </article>
+        ))}
+      </div>
+    </article>
+  );
 }
 
 function Icon({ name }) {
@@ -396,6 +674,13 @@ function Icon({ name }) {
         <path d="M12 8v5l3 2" />
         <path d="M3.05 11A9 9 0 1 1 6 18.3" />
         <path d="M3 4v7h7" />
+      </svg>
+    ),
+    upload: (
+      <svg {...common}>
+        <path d="M12 16V4" />
+        <path d="m7 9 5-5 5 5" />
+        <path d="M20 16.5v2.5A2 2 0 0 1 18 21H6a2 2 0 0 1-2-2v-2.5" />
       </svg>
     ),
     search: (
@@ -502,7 +787,11 @@ function EvidenceCard({ docId, evidence, question }) {
           {error ? <p className="error-inline">{error}</p> : null}
           {!loading && !error && summary ? (
             <>
-              <p>{summary}</p>
+              <ul className="summary-list compact">
+                {buildBulletListFromText(summary).map((item) => (
+                  <li key={item}>{item}</li>
+                ))}
+              </ul>
               <small>{sourceMethod === "openai" ? "Generated with OpenAI" : "Fallback summary"}</small>
             </>
           ) : null}
@@ -535,10 +824,7 @@ function AskRecordCard({ record, question }) {
         <StatusPill tone={statusTone(record.status)}>{record.status}</StatusPill>
       </div>
 
-      <div className="summary-band">
-        <strong>Readable summary</strong>
-        <p>{buildReadableAskSummary(record)}</p>
-      </div>
+      <SummaryList title="Readable summary" items={buildReadableAskSummary(record)} />
 
       <div className="highlight-list">
         {highlights.map((item) => (
@@ -593,6 +879,24 @@ function ComparePreview({ rows, graphSummary }) {
           <MetricTile key={item.label} {...item} />
         ))}
       </div>
+      <div className="compare-card-grid">
+        {rows.map((row) => (
+          <article key={`${row.payer}-${row.policy_name}-card`} className="compare-card">
+            <div className="result-head">
+              <div>
+                <h4>{row.payer}</h4>
+                <p className="muted">{row.policy_name}</p>
+              </div>
+              <StatusPill tone="neutral">{row.status}</StatusPill>
+            </div>
+            <ul className="summary-list compact">
+              {buildCompareCardPoints(row).map((item) => (
+                <li key={item}>{item}</li>
+              ))}
+            </ul>
+          </article>
+        ))}
+      </div>
       {graphSummary ? (
         <div className="insight-callout">
           <strong>Graph summary</strong>
@@ -643,10 +947,7 @@ function ChangesPreview({ changeResult }) {
           </div>
           <StatusPill tone="warning">{changeResult.diffs.length} fields</StatusPill>
         </div>
-        <div className="summary-band">
-          <strong>Readable summary</strong>
-          <p>{changeResult.narrative_summary}</p>
-        </div>
+        <SummaryList title="Readable summary" items={buildChangeSummaryPoints(changeResult)} />
 
         <details className="details-block">
           <summary>Detailed explanation</summary>
@@ -675,23 +976,6 @@ function ChangesPreview({ changeResult }) {
   );
 }
 
-function MessageBubble({ message }) {
-  return (
-    <article className={`message-bubble ${message.role}`}>
-      <div className="message-meta">
-        <span>{message.role === "user" ? "Analyst" : "Anton Copilot"}</span>
-        <span>{message.timestamp}</span>
-      </div>
-      {message.title ? <h3>{message.title}</h3> : null}
-      {message.text ? <p>{message.text}</p> : null}
-      {message.kind === "ask" ? <AskPreview records={message.records} question={message.question} /> : null}
-      {message.kind === "compare" ? <ComparePreview rows={message.rows} graphSummary={message.graphSummary} /> : null}
-      {message.kind === "changes" ? <ChangesPreview changeResult={message.changeResult} /> : null}
-      {message.kind === "system" && message.meta ? <p className="muted">{message.meta}</p> : null}
-    </article>
-  );
-}
-
 function HistoryCard({ entry, detail, loading, onToggle }) {
   return (
     <article className="history-card">
@@ -705,10 +989,7 @@ function HistoryCard({ entry, detail, loading, onToggle }) {
         <StatusPill tone={statusTone(entry.status)}>{entry.kind}</StatusPill>
       </div>
 
-      <div className="summary-band">
-        <strong>Summary</strong>
-        <p>{detail ? extractHistoryExplanation(detail) : entry.summary}</p>
-      </div>
+      <SummaryList title="Summary" items={detail ? extractHistoryExplanation(detail) : [entry.summary]} />
 
       <div className="tag-row">
         <span>Drug: {entry.drug_name || "unknown"}</span>
@@ -776,10 +1057,13 @@ export default function App() {
   const [askResult, setAskResult] = useState(null);
   const [changeResult, setChangeResult] = useState(null);
   const [indexResult, setIndexResult] = useState(null);
-  const [messages, setMessages] = useState([]);
+  const [localTabHistory, setLocalTabHistory] = useState(defaultLocalTabHistory);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isIndexing, setIsIndexing] = useState(false);
   const [isUpdatingIndexSettings, setIsUpdatingIndexSettings] = useState(false);
+  const [selectedUpload, setSelectedUpload] = useState(null);
+  const [isUploading, setIsUploading] = useState(false);
+  const [hasHydratedLocalState, setHasHydratedLocalState] = useState(false);
 
   const payers = useMemo(() => groupPayers(documents), [documents]);
   const validChangePairs = useMemo(() => deriveValidChangePairs(documents), [documents]);
@@ -788,6 +1072,9 @@ export default function App() {
     [compareResult]
   );
   const recentHistory = useMemo(() => historyEntries.slice(0, 12), [historyEntries]);
+  const activeLocalHistory = useMemo(() => localTabHistory[activeTab] || [], [activeTab, localTabHistory]);
+  const currentTabUseCases = useMemo(() => useCasesForTab(activeTab), [activeTab]);
+  const heroPayers = useMemo(() => payers.slice(0, 8), [payers]);
   const matchingDocuments = useMemo(() => {
     const lowered = normalizeText(drugName);
     if (!lowered) return documents;
@@ -808,27 +1095,39 @@ export default function App() {
           fetchHistory()
         ]);
         const defaultPair = deriveValidChangePairs(docs)[0] || pickVersionPair(docs, DEFAULT_DRUG, "UnitedHealthcare");
-        const defaultPayers = ["Aetna", "Cigna", "UnitedHealthcare"].filter((payer) => groupPayers(docs).includes(payer));
+        const availablePayers = groupPayers(docs);
+        const defaultPayers = ["Aetna", "Cigna", "UnitedHealthcare"].filter((payer) => availablePayers.includes(payer));
+        const storedState = safeJsonParse(window.localStorage.getItem(LOCAL_STATE_KEY), {});
+        const storedSelectedPayers = Array.isArray(storedState?.selectedPayers)
+          ? storedState.selectedPayers.filter((payer) => availablePayers.includes(payer))
+          : [];
+        const oldDocExists = docs.some((doc) => doc.doc_id === storedState?.oldDocId);
+        const newDocExists = docs.some((doc) => doc.doc_id === storedState?.newDocId);
 
         setDocuments(docs);
         setGraphStatus(graph);
         setIndexSettings(indexConfig);
         setHistoryEntries(history);
-        setSelectedPayers(defaultPayers.length ? defaultPayers : groupPayers(docs).slice(0, 3));
-        if (defaultPair) {
+        setActiveTab(TRACKER_TABS.some((tab) => tab.id === storedState?.activeTab) ? storedState.activeTab : "home");
+        setActiveUseCaseId(storedState?.activeUseCaseId || "");
+        setDrugName(storedState?.drugName || DEFAULT_DRUG);
+        setQuestion(storedState?.question || USECASE_SECTIONS[1].cases[0].question);
+        setSelectedPayers(storedSelectedPayers.length ? storedSelectedPayers : defaultPayers.length ? defaultPayers : availablePayers.slice(0, 3));
+        if (oldDocExists && newDocExists) {
+          setOldDocId(storedState.oldDocId);
+          setNewDocId(storedState.newDocId);
+        } else if (defaultPair) {
           setOldDocId(defaultPair.oldDocId);
           setNewDocId(defaultPair.newDocId);
         } else if (docs.length >= 2) {
           setOldDocId(docs[0].doc_id);
           setNewDocId(docs[1].doc_id);
         }
-        setMessages([
-          createMessage("assistant", "system", {
-            title: "Workspace ready",
-            text: "Use the grouped use cases to open the right tracker and type naturally. Evidence cards now link back to the source PDF page and can generate page summaries.",
-            meta: `${docs.length} documents loaded across ${groupPayers(docs).length} payers.`
-          })
-        ]);
+        setAskResult(storedState?.askResult || null);
+        setCompareResult(storedState?.compareResult || null);
+        setChangeResult(storedState?.changeResult || null);
+        setLocalTabHistory(mergeLocalTabHistory(storedState?.localTabHistory));
+        setHasHydratedLocalState(true);
       } catch (loadError) {
         setError(loadError.message);
       } finally {
@@ -847,8 +1146,44 @@ export default function App() {
     }
   }, [documents, drugName, selectedPayers, validChangePairs]);
 
-  function appendMessage(msg) {
-    setMessages((current) => [...current, msg].slice(-MAX_MESSAGES));
+  useEffect(() => {
+    if (!hasHydratedLocalState) return;
+    window.localStorage.setItem(
+      LOCAL_STATE_KEY,
+      JSON.stringify({
+        activeTab,
+        activeUseCaseId,
+        drugName,
+        question,
+        selectedPayers,
+        oldDocId,
+        newDocId,
+        askResult,
+        compareResult,
+        changeResult,
+        localTabHistory
+      })
+    );
+  }, [
+    activeTab,
+    activeUseCaseId,
+    askResult,
+    changeResult,
+    compareResult,
+    drugName,
+    hasHydratedLocalState,
+    localTabHistory,
+    newDocId,
+    oldDocId,
+    question,
+    selectedPayers
+  ]);
+
+  function appendLocalTabHistory(tab, entry) {
+    setLocalTabHistory((current) => ({
+      ...current,
+      [tab]: [entry, ...(current[tab] || [])].slice(0, MAX_LOCAL_HISTORY)
+    }));
   }
 
   async function refreshHistory() {
@@ -868,6 +1203,10 @@ export default function App() {
       setHistoryEntries([]);
       setHistoryDetails({});
       setNotice(result.message || "History cleared.");
+      appendLocalTabHistory(
+        "history",
+        createLocalHistoryEntry("history", "Cleared backend history", [result.message || "Saved backend runs removed"], "cleared")
+      );
     } catch (requestError) {
       setError(requestError.message);
     }
@@ -898,6 +1237,15 @@ export default function App() {
 
     setNotice(`Loaded ${useCase.label}. Review the prompt, adjust if needed, and run it manually from the ${useCase.tab} tracker.`);
     setError("");
+    appendLocalTabHistory(
+      useCase.tab,
+      createLocalHistoryEntry(
+        useCase.tab,
+        `Loaded ${useCase.label}`,
+        [`Drug: ${useCase.drugName}`, `Payers: ${formatList(useCase.payerFilters || [])}`, "Starter prompt prepared"],
+        "starter"
+      )
+    );
   }
 
   async function executeAsk(nextDrugName, nextQuestion, nextPayers, title = "Ask tracker") {
@@ -907,14 +1255,9 @@ export default function App() {
       payer_filters: nextPayers
     });
     setAskResult(result);
-    appendMessage(
-      createMessage("assistant", "ask", {
-        title,
-        text: `Reviewed ${result.records.length} payer policies for ${nextDrugName}.`,
-        question: nextQuestion,
-        records: result.records
-      })
-    );
+    if (result.records?.[0]) {
+      appendLocalTabHistory("ask", buildAskLocalHistory(result.records[0], nextQuestion));
+    }
   }
 
   async function executeCompare(nextDrugName, nextQuestion, nextPayers, title = "Compare tracker") {
@@ -924,14 +1267,7 @@ export default function App() {
       payer_filters: nextPayers
     });
     setCompareResult(result);
-    appendMessage(
-      createMessage("assistant", "compare", {
-        title,
-        text: `Compared ${result.rows.length} normalized payer rows for ${nextDrugName}.`,
-        rows: result.rows,
-        graphSummary: result.graph_summary || null
-      })
-    );
+    appendLocalTabHistory("compare", buildCompareLocalHistory(result, nextDrugName, nextQuestion));
   }
 
   async function executeChanges(nextDrugName, nextQuestion, nextOldDocId, nextNewDocId, title = "Change tracker") {
@@ -942,12 +1278,14 @@ export default function App() {
       question: nextQuestion
     });
     setChangeResult(result);
-    appendMessage(
-      createMessage("assistant", "changes", {
-        title,
-        text: `Compared ${getDocumentLabel(documents, nextOldDocId)} against ${getDocumentLabel(documents, nextNewDocId)}.`,
-        changeResult: result
-      })
+    appendLocalTabHistory(
+      "changes",
+      buildChangesLocalHistory(
+        result,
+        getDocumentLabel(documents, nextOldDocId),
+        getDocumentLabel(documents, nextNewDocId),
+        nextQuestion
+      )
     );
   }
 
@@ -956,7 +1294,6 @@ export default function App() {
     setError("");
     setNotice("");
     setIsSubmitting(true);
-    appendMessage(createMessage("user", "text", { title: `${activeTab} tracker`, text: question.trim() }));
 
     try {
       if (activeTab === "ask") {
@@ -969,7 +1306,6 @@ export default function App() {
       await refreshHistory();
     } catch (requestError) {
       setError(requestError.message);
-      appendMessage(createMessage("assistant", "system", { title: "Request failed", text: requestError.message }));
     } finally {
       setIsSubmitting(false);
     }
@@ -1008,10 +1344,58 @@ export default function App() {
       setNotice(
         `PageIndex warmup finished for ${targetIds.length} docs. Cached: ${counts.cached || 0}, completed: ${counts.completed || 0}, failed: ${counts.failed || 0}.`
       );
+      appendLocalTabHistory(
+        activeTab,
+        createLocalHistoryEntry(
+          activeTab,
+          "PageIndex warmup",
+          [
+            `Target documents: ${targetIds.length}`,
+            `Cached: ${counts.cached || 0}`,
+            `Completed: ${counts.completed || 0}`,
+            `Failed: ${counts.failed || 0}`
+          ],
+          "indexing"
+        )
+      );
     } catch (requestError) {
       setError(requestError.message);
     } finally {
       setIsIndexing(false);
+    }
+  }
+
+  async function handleUpload() {
+    if (!selectedUpload) return;
+    setIsUploading(true);
+    setError("");
+    setNotice("");
+    try {
+      const result = await uploadDocument(selectedUpload);
+      const docs = await fetchDocuments();
+      setDocuments(docs);
+      setSelectedUpload(null);
+      setNotice(result.message);
+      if (result.document) {
+        setDrugName(result.document.likely_drug || drugName);
+      }
+      appendLocalTabHistory(
+        "upload",
+        createLocalHistoryEntry(
+          "upload",
+          result.stored_filename,
+          [
+            result.duplicate ? "Duplicate PDF detected; existing file retained" : "New PDF saved into docs",
+            `Policy label: ${result.document?.policy_name || result.stored_filename}`,
+            `Likely drug: ${result.document?.likely_drug || "not inferred yet"}`
+          ],
+          result.duplicate ? "duplicate" : "uploaded"
+        )
+      );
+    } catch (requestError) {
+      setError(requestError.message);
+    } finally {
+      setIsUploading(false);
     }
   }
 
@@ -1029,6 +1413,15 @@ export default function App() {
     try {
       const detail = await fetchHistoryDetail(entryId);
       setHistoryDetails((current) => ({ ...current, [entryId]: detail }));
+      appendLocalTabHistory(
+        "history",
+        createLocalHistoryEntry(
+          "history",
+          detail.title,
+          extractHistoryExplanation(detail).slice(0, 3),
+          detail.kind
+        )
+      );
     } catch (requestError) {
       setError(requestError.message);
     } finally {
@@ -1066,14 +1459,33 @@ export default function App() {
     setTimeout(() => URL.revokeObjectURL(url), 100);
   }
 
+  function renderCurrentTabResult() {
+    if (activeTab === "ask") {
+      if (!askResult?.records?.length) return null;
+      return <AskPreview records={askResult.records} question={question} />;
+    }
+
+    if (activeTab === "compare") {
+      if (!compareResult?.rows?.length) return null;
+      return <ComparePreview rows={compareResult.rows} graphSummary={compareResult.graph_summary || null} />;
+    }
+
+    if (activeTab === "changes") {
+      if (!changeResult?.old_record || !changeResult?.new_record) return null;
+      return <ChangesPreview changeResult={changeResult} />;
+    }
+
+    return null;
+  }
+
   if (loading) {
-    return <div className="loading-screen">Loading Anton Rx Track...</div>;
+    return <div className="loading-screen">Loading DOC Parsers...</div>;
   }
 
   return (
     <div className="tracker-app">
       <header className="topbar">
-        <div className="brand">Anton Rx Track</div>
+        <div className="brand">DOC Parsers</div>
         <nav className="topnav" aria-label="Tracker tabs">
           {TRACKER_TABS.map((tab) => (
             <button
@@ -1154,45 +1566,216 @@ export default function App() {
           {activeTab === "home" ? (
             <>
               <section className="hero">
-                <div className="hero-copy">
-                  <span className="eyebrow">Hero</span>
-                  <h1>Choose a use case, then type naturally</h1>
-                  <p>
-                    The home screen is now a guided use-case library. Each card loads the right tracker, drug, payer set, and starter query, but nothing auto-runs.
-                  </p>
-                  <button
-                    type="button"
-                    className="primary-button"
-                    onClick={() => loadUseCase(USECASE_SECTIONS[1].cases[0])}
-                  >
-                    <Icon name="launch" />
-                    <span>Open Recommended Compare Use Case</span>
-                  </button>
+                <div className="hero-board">
+                  <div className="hero-copy">
+                    <h1>DOC Parsers</h1>
+                    <div className="hero-actions">
+                      <button type="button" className="primary-button" onClick={() => setActiveTab("ask")}>
+                        <Icon name="ask" />
+                        <span>Open Ask</span>
+                      </button>
+                      <button type="button" className="ghost-button" onClick={() => setActiveTab("compare")}>
+                        <Icon name="compare" />
+                        <span>Open Compare</span>
+                      </button>
+                      <button type="button" className="ghost-button" onClick={() => setActiveTab("changes")}>
+                        <Icon name="changes" />
+                        <span>Open Changes</span>
+                      </button>
+                    </div>
+                  </div>
+                  <article className="hero-corpus-card">
+                    <div className="hero-metrics">
+                      <MetricTile label="Policies" value={documents.length} detail="local corpus" />
+                      <MetricTile label="Payers" value={payers.length} detail="active entities" />
+                      <MetricTile label="History" value={historyEntries.length} detail="saved backend runs" />
+                    </div>
+                    <div className="hero-payer-panel">
+                      <div className="result-head">
+                        <h3>Payers</h3>
+                        <StatusPill tone="neutral">{payers.length}</StatusPill>
+                      </div>
+                      <div className="hero-chip-row">
+                        {heroPayers.map((payer) => (
+                          <span key={payer} className="hero-chip">
+                            {payer}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  </article>
                 </div>
-                <div className="hero-metrics">
-                  <MetricTile label="Policies" value={documents.length} detail="documents discovered" />
-                  <MetricTile label="Payers" value={payers.length} detail="active in corpus" />
-                  <MetricTile
-                    label="History"
-                    value={historyEntries.length}
-                    detail="saved backend runs"
-                  />
+
+                <div className="hero-launch-grid">
+                  <button type="button" className="hero-launch-card" onClick={() => setActiveTab("ask")}>
+                    <span className="eyebrow">Ask</span>
+                    <h3>Single-payer policy answers</h3>
+                  </button>
+                  <button type="button" className="hero-launch-card" onClick={() => setActiveTab("compare")}>
+                    <span className="eyebrow">Compare</span>
+                    <h3>Cross-payer differences</h3>
+                  </button>
+                  <button type="button" className="hero-launch-card" onClick={() => setActiveTab("changes")}>
+                    <span className="eyebrow">Changes</span>
+                    <h3>Version tracking</h3>
+                  </button>
                 </div>
               </section>
 
-              {USECASE_SECTIONS.map((section) => (
-                <section key={section.id} className="usecase-section">
+              <section className="usecase-section">
+                <div className="section-header">
+                  <div>
+                    <span className="eyebrow">Why It Is Different</span>
+                    <h2>What makes DOC Parsers stronger than generic PDF parsers</h2>
+                    <p className="muted">The product is opinionated around payer policy workflows, not just document chat.</p>
+                  </div>
+                  <StatusPill tone="neutral">4 differentiators</StatusPill>
+                </div>
+                <div className="usecase-grid">
+                  {HOME_DIFFERENTIATORS.map((item) => (
+                    <article key={item.title} className="usecase-card">
+                      <div className="result-head">
+                        <h3>{item.title}</h3>
+                      </div>
+                      <p>{item.body}</p>
+                    </article>
+                  ))}
+                </div>
+              </section>
+
+              <section className="usecase-section">
+                <div className="section-header">
+                  <div>
+                    <span className="eyebrow">Architecture</span>
+                    <h2>Implementation layers behind the demo</h2>
+                    <p className="muted">These are the layers you can call out while navigating the product.</p>
+                  </div>
+                  <StatusPill tone="neutral">4 layers</StatusPill>
+                </div>
+                <div className="usecase-grid architecture-grid">
+                  {HOME_ARCHITECTURE.map((item) => (
+                    <article key={item.title} className="usecase-card architecture-card">
+                      <span className="eyebrow">Layer</span>
+                      <h3>{item.title}</h3>
+                      <p>{item.detail}</p>
+                    </article>
+                  ))}
+                </div>
+              </section>
+            </>
+          ) : null}
+
+          {activeTab === "upload" ? (
+            <>
+              <ExplanationCard tab="upload" />
+              <section className="tracker-header">
+                <div>
+                  <span className="eyebrow">Ingest</span>
+                  <h1>Upload PDF for processing</h1>
+                  <p>Upload a payer-policy PDF and save it into the local `docs/` folder so it becomes part of the corpus.</p>
+                </div>
+              </section>
+
+              <section className="composer-card">
+                <label className="field">
+                  <span>PDF file</span>
+                  <input
+                    type="file"
+                    accept="application/pdf,.pdf"
+                    onChange={(event) => setSelectedUpload(event.target.files?.[0] || null)}
+                  />
+                </label>
+
+                <div className="composer-actions">
+                  <span className="muted">
+                    {selectedUpload ? `Selected: ${selectedUpload.name}` : "Choose a PDF to add it to docs."}
+                  </span>
+                  <button type="button" className="primary-button" onClick={handleUpload} disabled={!selectedUpload || isUploading}>
+                    <Icon name="file" />
+                    <span>{isUploading ? "Uploading..." : "Upload PDF"}</span>
+                  </button>
+                </div>
+              </section>
+
+              <section className="tracker-grid">
+                <article className="panel-card">
                   <div className="section-header">
                     <div>
-                      <span className="eyebrow">{section.id}</span>
-                      <h2>{section.title}</h2>
-                      <p className="muted">{section.description}</p>
+                      <span className="eyebrow">What happens</span>
+                      <h2>Ingest flow</h2>
                     </div>
-                    <StatusPill tone="neutral">{section.cases.length} use cases</StatusPill>
                   </div>
+                  <ul className="summary-list">
+                    <li>The PDF is stored locally in `docs/`.</li>
+                    <li>The backend refreshes the discovered document list.</li>
+                    <li>You can then warm PageIndex and use Ask, Compare, or Changes on the new file.</li>
+                    <li>Exact duplicate PDFs are detected and not re-added.</li>
+                  </ul>
+                </article>
 
-                  <div className="usecase-grid">
-                    {section.cases.map((useCase) => (
+                <aside className="insight-panel">
+                  <LocalHistoryCard tab="upload" entries={activeLocalHistory} />
+                  <article className="panel-card">
+                    <div className="result-head">
+                      <h3>Current corpus</h3>
+                      <StatusPill tone="neutral">{documents.length} docs</StatusPill>
+                    </div>
+                    <div className="document-list">
+                      {documents.slice(0, 8).map((doc) => (
+                        <article key={doc.doc_id} className="document-card">
+                          <div className="result-head">
+                            <div>
+                              <h4>{doc.payer}</h4>
+                              <p className="muted">{doc.policy_name}</p>
+                            </div>
+                            <StatusPill tone="neutral">{doc.version_label || "current"}</StatusPill>
+                          </div>
+                        </article>
+                      ))}
+                    </div>
+                  </article>
+                </aside>
+              </section>
+            </>
+          ) : null}
+
+          {["ask", "compare", "changes"].includes(activeTab) ? (
+            <>
+              <ExplanationCard tab={activeTab} />
+              <section className="tracker-header">
+                <div>
+                  <span className="eyebrow">Tracker</span>
+                  <h1>
+                    {activeTab === "ask" && "Ask tracker"}
+                    {activeTab === "compare" && "Compare tracker"}
+                    {activeTab === "changes" && "Change tracker"}
+                  </h1>
+                  <p>
+                    {activeTab === "ask" && "Readable summaries first, detailed extraction second, evidence pages linked back to source PDFs."}
+                    {activeTab === "compare" && "Compare normalized payer rows and export the output when needed."}
+                    {activeTab === "changes" && "Use detected valid pairs or choose explicit documents for version review."}
+                  </p>
+                </div>
+              </section>
+
+              {currentTabUseCases.length ? (
+                <section className="panel-card preset-panel">
+                  <div className="section-header">
+                    <div>
+                      <span className="eyebrow">Demo Presets</span>
+                      <h2>
+                        {activeTab === "ask" && "Ask presets"}
+                        {activeTab === "compare" && "Compare presets"}
+                        {activeTab === "changes" && "Change presets"}
+                      </h2>
+                      <p className="muted">
+                        Load one of the validated demo prompts directly in this tab, then edit the language naturally before running it.
+                      </p>
+                    </div>
+                    <StatusPill tone="neutral">{currentTabUseCases.length} presets</StatusPill>
+                  </div>
+                  <div className="preset-grid">
+                    {currentTabUseCases.map((useCase) => (
                       <article
                         key={useCase.id}
                         className={activeUseCaseId === useCase.id ? "usecase-card active" : "usecase-card"}
@@ -1210,33 +1793,13 @@ export default function App() {
                           {useCase.oldDocId ? <span>Version-aware</span> : null}
                         </div>
                         <button type="button" className="soft-button" onClick={() => loadUseCase(useCase)}>
-                          Open in {useCase.tab}
+                          Load preset
                         </button>
                       </article>
                     ))}
                   </div>
                 </section>
-              ))}
-            </>
-          ) : null}
-
-          {["ask", "compare", "changes"].includes(activeTab) ? (
-            <>
-              <section className="tracker-header">
-                <div>
-                  <span className="eyebrow">Tracker</span>
-                  <h1>
-                    {activeTab === "ask" && "Ask tracker"}
-                    {activeTab === "compare" && "Compare tracker"}
-                    {activeTab === "changes" && "Change tracker"}
-                  </h1>
-                  <p>
-                    {activeTab === "ask" && "Readable summaries first, detailed extraction second, evidence pages linked back to source PDFs."}
-                    {activeTab === "compare" && "Compare normalized payer rows and export the output when needed."}
-                    {activeTab === "changes" && "Use detected valid pairs or choose explicit documents for version review."}
-                  </p>
-                </div>
-              </section>
+              ) : null}
 
               <section className="composer-card">
                 <label className="field">
@@ -1316,27 +1879,25 @@ export default function App() {
 
               <section className="tracker-grid">
                 <div className="thread-panel">
-                  {messages.map((message) => (
-                    <MessageBubble key={message.id} message={message} />
-                  ))}
+                  {renderCurrentTabResult() || (
+                    <article className="panel-card subtle-placeholder">
+                      <p className="muted">Run this tracker to populate the result workspace.</p>
+                    </article>
+                  )}
                 </div>
 
                 <aside className="insight-panel">
-                  {activeTab === "compare" ? (
+                  {activeTab === "compare" && compareResult?.rows?.length ? (
                     <article className="panel-card">
                       <div className="result-head">
                         <h3>Compare signals</h3>
                         <StatusPill tone="neutral">{compareResult?.rows?.length || 0} rows</StatusPill>
                       </div>
-                      {compareHighlights.length ? (
-                        <div className="metric-grid compact">
-                          {compareHighlights.map((item) => (
-                            <MetricTile key={item.label} {...item} />
-                          ))}
-                        </div>
-                      ) : (
-                        <p className="muted">Run compare to populate payer metrics.</p>
-                      )}
+                      <div className="metric-grid compact">
+                        {compareHighlights.map((item) => (
+                          <MetricTile key={item.label} {...item} />
+                        ))}
+                      </div>
                       {compareResult?.rows?.length ? (
                         <button type="button" className="soft-button" onClick={downloadCompareCsv}>
                           Download CSV
@@ -1351,7 +1912,7 @@ export default function App() {
                         <h3>Ask summary</h3>
                         <StatusPill tone="success">{askResult.records.length} records</StatusPill>
                       </div>
-                      <p>{buildReadableAskSummary(askResult.records[0])}</p>
+                      <SummaryList items={buildReadableAskSummary(askResult.records[0])} />
                     </article>
                   ) : null}
 
@@ -1376,29 +1937,7 @@ export default function App() {
                     </article>
                   ) : null}
 
-                  <article className="panel-card">
-                    <div className="result-head">
-                      <h3>Relevant documents</h3>
-                      <StatusPill tone="neutral">{matchingDocuments.length || documents.length}</StatusPill>
-                    </div>
-                    <div className="document-list">
-                      {(matchingDocuments.length ? matchingDocuments : documents).slice(0, 6).map((doc) => (
-                        <article key={doc.doc_id} className="document-card">
-                          <div className="result-head">
-                            <div>
-                              <h4>{doc.payer}</h4>
-                              <p className="muted">{doc.policy_name}</p>
-                            </div>
-                            <StatusPill tone="neutral">{doc.version_label || "current"}</StatusPill>
-                          </div>
-                          <div className="tag-row">
-                            <span>{doc.document_pattern}</span>
-                            <span>{doc.likely_drug || "multi-drug"}</span>
-                          </div>
-                        </article>
-                      ))}
-                    </div>
-                  </article>
+                  <LocalHistoryCard tab={activeTab} entries={activeLocalHistory} />
                 </aside>
               </section>
             </>
@@ -1406,6 +1945,7 @@ export default function App() {
 
           {activeTab === "history" ? (
             <section className="history-panel">
+              <ExplanationCard tab="history" />
               <div className="section-header">
                 <div>
                   <span className="eyebrow">History</span>
@@ -1437,6 +1977,10 @@ export default function App() {
                   <p className="muted">No history yet. Run any tracker to persist a backend event.</p>
                 </article>
               )}
+
+              <div className="history-list" style={{ marginTop: "1rem" }}>
+                <LocalHistoryCard tab="history" entries={activeLocalHistory} />
+              </div>
             </section>
           ) : null}
         </main>

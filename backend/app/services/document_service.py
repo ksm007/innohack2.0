@@ -25,10 +25,16 @@ class DocumentService:
     def __init__(self) -> None:
         self.repository = Repository()
 
+    def document_root(self) -> Path:
+        return settings.docs_dir
+
+    def document_paths(self) -> list[Path]:
+        return sorted(settings.docs_dir.glob("*.pdf"), key=self._document_sort_key)
+
     def refresh_documents(self) -> list[DocumentSummary]:
         documents: list[DocumentSummary] = []
         seen_checksums: dict[str, Path] = {}
-        pdf_paths = sorted(settings.docs_dir.glob("*.pdf"), key=self._document_sort_key)
+        pdf_paths = self.document_paths()
         for path in pdf_paths:
             checksum = self._file_checksum(path)
             if checksum in seen_checksums:

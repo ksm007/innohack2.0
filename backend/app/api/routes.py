@@ -1,6 +1,8 @@
+import hashlib
+import re
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 
 from ..models.schemas import (
@@ -11,6 +13,7 @@ from ..models.schemas import (
     CompareRequest,
     CompareResponse,
     DocumentSummary,
+    DocumentUploadResponse,
     EvidenceSummaryRequest,
     EvidenceSummaryResponse,
     GraphStatus,
@@ -60,6 +63,51 @@ def graph_status() -> GraphStatus:
 @router.get("/documents", response_model=list[DocumentSummary])
 def list_documents() -> list[DocumentSummary]:
     return document_service.refresh_documents()
+
+
+@router.post("/documents/upload", response_model=DocumentUploadResponse)
+async def upload_document(file: UploadFile = File(...)) -> DocumentUploadResponse:
+    original_name = file.filename or "uploaded.pdf"
+    if not original_name.lower().endswith(".pdf"):
+        raise HTTPException(status_code=400, detail="Only PDF uploads are supported.")
+
+    content = await file.read()
+    if not content:
+        raise HTTPException(status_code=400, detail="Uploaded file is empty.")
+    if not content.startswith(b"%PDF"):
+        raise HTTPException(status_code=400, detail="Uploaded file is not a valid PDF.")
+
+    incoming_hash = hashlib.sha1(content).hexdigest()
+    for existing_path in document_service.document_paths():
+        digest = hashlib.sha1(existing_path.read_bytes()).hexdigest()
+        if digest == incoming_hash:
+            existing_doc = next(
+                (doc for doc in document_service.refresh_documents() if Path(doc.path) == existing_path.resolve()),
+                None,
+            )
+            return DocumentUploadResponse(
+                stored_filename=existing_path.name,
+                path=str(existing_path.resolve()),
+                duplicate=True,
+                message="An identical PDF already exists in docs. The existing document was kept.",
+                document=existing_doc,
+            )
+
+    safe_name = re.sub(r"[^A-Za-z0-9._ -]+", "_", original_name).strip() or "uploaded.pdf"
+    if not safe_name.lower().endswith(".pdf"):
+        safe_name = f"{safe_name}.pdf"
+    target_path = _unique_docs_path(safe_name)
+    target_path.write_bytes(content)
+
+    documents = document_service.refresh_documents()
+    uploaded_doc = next((doc for doc in documents if Path(doc.path) == target_path.resolve()), None)
+    return DocumentUploadResponse(
+        stored_filename=target_path.name,
+        path=str(target_path.resolve()),
+        duplicate=False,
+        message="PDF uploaded successfully and saved into docs.",
+        document=uploaded_doc,
+    )
 
 
 @router.get("/documents/{doc_id}/pdf")
@@ -158,3 +206,18 @@ def compare_policies(payload: CompareRequest) -> CompareResponse:
 @router.post("/changes", response_model=ChangeResponse)
 def compare_changes(payload: ChangeRequest) -> ChangeResponse:
     return comparison_service.diff_versions(payload)
+
+
+def _unique_docs_path(filename: str) -> Path:
+    candidate = document_service.document_root() / filename
+    if not candidate.exists():
+        return candidate
+
+    stem = candidate.stem
+    suffix = candidate.suffix
+    index = 1
+    while True:
+        next_candidate = candidate.with_name(f"{stem}-{index}{suffix}")
+        if not next_candidate.exists():
+            return next_candidate
+        index += 1

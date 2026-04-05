@@ -5,3 +5,4 @@ openai==1.76.0
 neo4j==5.28.1
 pypdf==5.4.0
 python-dotenv==1.1.0
+python-multipart==0.0.20

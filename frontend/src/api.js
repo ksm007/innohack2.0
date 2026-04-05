@@ -86,3 +86,17 @@ export function fetchEvidenceSummary(payload) {
 export function documentPdfUrl(docId, page = 1) {
   return `${API_URL}/documents/${docId}/pdf#page=${page}`;
 }
+
+export async function uploadDocument(file) {
+  const formData = new FormData();
+  formData.append("file", file);
+  const response = await fetch(`${API_URL}/documents/upload`, {
+    method: "POST",
+    body: formData
+  });
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(text || "Upload failed");
+  }
+  return response.json();
+}

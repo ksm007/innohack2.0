@@ -1,4 +1,4 @@
-@import url("https://fonts.googleapis.com/css2?family=Manrope:wght@500;600;700;800&family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@500;600&display=swap");
+@import url("https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Manrope:wght@500;600;700;800&family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@500;600&display=swap");
 
 :root {
   color-scheme: dark;
@@ -17,9 +17,11 @@
   --text: #e8edf5;
   --text-muted: rgba(232, 237, 245, 0.66);
   --text-soft: rgba(232, 237, 245, 0.38);
-  --accent: #b7d6ff;
-  --accent-strong: #8fc1ff;
-  --accent-dim: rgba(143, 193, 255, 0.14);
+  --accent: #d9e7ff;
+  --accent-strong: #91bbff;
+  --accent-dim: rgba(145, 187, 255, 0.14);
+  --accent-warm: #f1c98b;
+  --accent-warm-dim: rgba(241, 201, 139, 0.14);
   --success: #74e3a0;
   --success-dim: rgba(116, 227, 160, 0.16);
   --warning: #f0c47e;
@@ -45,9 +47,10 @@ body,
   margin: 0;
   min-height: 100%;
   background:
-    radial-gradient(circle at top right, rgba(143, 193, 255, 0.09), transparent 22%),
-    radial-gradient(circle at bottom left, rgba(116, 227, 160, 0.05), transparent 28%),
-    linear-gradient(180deg, #080b0f 0%, #0a0e13 100%);
+    radial-gradient(circle at top right, rgba(145, 187, 255, 0.14), transparent 20%),
+    radial-gradient(circle at 20% 15%, rgba(241, 201, 139, 0.08), transparent 24%),
+    radial-gradient(circle at bottom left, rgba(116, 227, 160, 0.04), transparent 28%),
+    linear-gradient(180deg, #06080c 0%, #0a0f16 100%);
   color: var(--text);
 }
 
@@ -158,16 +161,18 @@ summary {
   align-items: center;
   gap: 1rem;
   padding: 1rem 1.2rem;
-  background: rgba(8, 11, 15, 0.92);
+  background:
+    linear-gradient(90deg, rgba(8, 11, 15, 0.96), rgba(11, 16, 23, 0.94)),
+    rgba(8, 11, 15, 0.92);
   backdrop-filter: blur(16px);
   border-bottom: 1px solid var(--border);
 }
 
 .brand {
-  font-family: "Manrope", sans-serif;
-  font-size: 1.2rem;
+  font-family: "Instrument Serif", serif;
+  font-size: 1.45rem;
   font-weight: 800;
-  letter-spacing: -0.03em;
+  letter-spacing: 0.01em;
 }
 
 .topnav {
@@ -191,8 +196,8 @@ summary {
 .topnav-item:hover,
 .topnav-item.active {
   color: var(--text);
-  background: rgba(255, 255, 255, 0.05);
-  border-color: var(--border);
+  background: linear-gradient(180deg, rgba(145, 187, 255, 0.13), rgba(255, 255, 255, 0.03));
+  border-color: rgba(145, 187, 255, 0.18);
 }
 
 .search-box {
@@ -246,10 +251,16 @@ summary {
 .usecase-card {
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.025), transparent 88%),
+    radial-gradient(circle at top left, rgba(145, 187, 255, 0.05), transparent 40%),
     var(--panel);
   border: 1px solid var(--border);
   border-radius: var(--radius);
   box-shadow: var(--shadow);
+}
+
+.explanation-card {
+  padding: 1rem 1.1rem;
+  margin-bottom: 1rem;
 }
 
 .sidebar-card {
@@ -352,19 +363,120 @@ summary {
 
 .hero {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 320px;
-  gap: 1rem;
-  padding: 1.25rem;
+  gap: 1.1rem;
+  padding: 1.45rem;
   margin-bottom: 1rem;
+  position: relative;
+  overflow: hidden;
 }
 
-.hero-copy p {
-  margin-top: 0.65rem;
-  max-width: 56rem;
-  color: var(--text-muted);
+.hero::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background:
+    linear-gradient(125deg, rgba(145, 187, 255, 0.08), transparent 36%),
+    linear-gradient(305deg, rgba(241, 201, 139, 0.08), transparent 30%);
+  pointer-events: none;
 }
 
-.hero-copy .primary-button {
+.hero-copy h1 {
+  max-width: 10ch;
+  font-family: "Instrument Serif", serif;
+  font-size: clamp(3rem, 6vw, 5.6rem);
+  line-height: 0.9;
+  letter-spacing: -0.03em;
+  margin: 0;
+}
+
+.hero-board {
+  display: grid;
+  grid-template-columns: minmax(260px, 0.9fr) minmax(0, 1.6fr);
+  gap: 1rem;
+  align-items: start;
+}
+
+.hero-copy {
+  min-height: 100%;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-start;
+  padding: 0.2rem 0.1rem;
+}
+
+.hero-corpus-card {
+  padding: 1rem;
+  border-radius: 22px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.045), rgba(10, 14, 20, 0.86)),
+    var(--panel-2);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  display: grid;
+  gap: 1rem;
+}
+
+.hero-metrics {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.hero-payer-panel {
+  padding: 0.9rem 0.95rem;
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--border);
+}
+
+.hero-chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.55rem;
+}
+
+.hero-chip {
+  padding: 0.42rem 0.68rem;
+  border-radius: 999px;
+  background: rgba(145, 187, 255, 0.12);
+  border: 1px solid rgba(145, 187, 255, 0.16);
+  color: var(--text);
+  font-size: 0.8rem;
+}
+
+.hero-launch-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.9rem;
+}
+
+.hero-launch-card {
+  text-align: left;
+  padding: 1rem;
+  border-radius: 20px;
+  border: 1px solid var(--border);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.035), rgba(10, 14, 20, 0.88)),
+    var(--panel-2);
+  color: var(--text);
+  box-shadow: var(--shadow);
+  transition: transform 160ms ease, border-color 160ms ease, background 160ms ease;
+}
+
+.hero-launch-card h3 {
+  margin-top: 0.55rem;
+  font-size: 1.1rem;
+}
+
+.hero-launch-card:hover {
+  transform: translateY(-2px);
+  border-color: rgba(145, 187, 255, 0.24);
+  background:
+    linear-gradient(180deg, rgba(145, 187, 255, 0.08), rgba(10, 14, 20, 0.9)),
+    var(--panel-2);
+}
+
+.hero-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
   margin-top: 1rem;
 }
 
@@ -383,8 +495,8 @@ summary {
 }
 
 .metric-tile {
-  background: var(--panel-2);
-  border: 1px solid var(--border);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.04), rgba(10, 14, 20, 0.84));
+  border: 1px solid rgba(255, 255, 255, 0.08);
   border-radius: 16px;
   padding: 0.9rem;
 }
@@ -434,8 +546,25 @@ summary {
   gap: 0.9rem;
 }
 
+.preset-panel {
+  padding: 1rem 1.1rem;
+  margin-bottom: 1rem;
+}
+
+.preset-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.9rem;
+}
+
 .usecase-card {
   padding: 1rem;
+  transition: transform 160ms ease, border-color 160ms ease, box-shadow 160ms ease;
+}
+
+.usecase-card:hover {
+  transform: translateY(-2px);
+  border-color: rgba(145, 187, 255, 0.18);
 }
 
 .usecase-card.active {
@@ -455,10 +584,15 @@ summary {
   gap: 1rem;
   padding: 1rem 1.1rem;
   margin-bottom: 1rem;
+  position: relative;
+  overflow: hidden;
 }
 
 .tracker-header h1 {
   margin-top: 0.35rem;
+  font-family: "Instrument Serif", serif;
+  font-size: clamp(1.8rem, 3vw, 2.5rem);
+  letter-spacing: -0.03em;
 }
 
 .tracker-header p {
@@ -469,6 +603,9 @@ summary {
 .composer-card {
   padding: 1rem 1.1rem;
   margin-bottom: 1rem;
+  background:
+    linear-gradient(180deg, rgba(145, 187, 255, 0.05), transparent 70%),
+    var(--panel);
 }
 
 .field {
@@ -574,6 +711,13 @@ summary {
   padding: 0.95rem;
 }
 
+.subtle-placeholder {
+  padding: 1.1rem 1.15rem;
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px dashed rgba(255, 255, 255, 0.08);
+  box-shadow: none;
+}
+
 .result-head {
   display: flex;
   align-items: flex-start;
@@ -585,13 +729,30 @@ summary {
 .summary-band {
   padding: 0.85rem 0.95rem;
   border-radius: 16px;
-  background: rgba(143, 193, 255, 0.08);
-  border: 1px solid rgba(143, 193, 255, 0.16);
+  background: linear-gradient(180deg, rgba(145, 187, 255, 0.08), rgba(255, 255, 255, 0.02));
+  border: 1px solid rgba(145, 187, 255, 0.16);
 }
 
 .summary-band strong {
   display: block;
   margin-bottom: 0.3rem;
+}
+
+.summary-list {
+  margin: 0;
+  padding-left: 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  color: var(--text-muted);
+}
+
+.summary-list.compact {
+  gap: 0.3rem;
+}
+
+.summary-list li::marker {
+  color: var(--accent-strong);
 }
 
 .highlight-list {
@@ -646,6 +807,15 @@ summary {
   background: rgba(255, 255, 255, 0.05);
   color: var(--text-muted);
   font-size: 0.78rem;
+}
+
+.architecture-grid .usecase-card,
+.architecture-card {
+  min-height: 180px;
+}
+
+.architecture-card .eyebrow {
+  color: var(--accent-warm);
 }
 
 .insight-callout {
@@ -740,6 +910,19 @@ summary {
   border-radius: 18px;
 }
 
+.compare-card-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.75rem;
+}
+
+.compare-card {
+  background: var(--panel-3);
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  padding: 0.95rem;
+}
+
 .table-wrap th,
 .table-wrap td {
   padding: 0.82rem 0.9rem;
@@ -757,16 +940,25 @@ summary {
 
 .document-list,
 .history-list,
-.mini-list {
+.mini-list,
+.local-history-list {
   display: flex;
   flex-direction: column;
   gap: 0.8rem;
 }
 
-.mini-list-item {
+.mini-list-item,
+.local-history-item {
   display: flex;
   flex-direction: column;
   gap: 0.3rem;
+}
+
+.local-history-item {
+  background: var(--panel-3);
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  padding: 0.95rem;
 }
 
 .history-controls {
@@ -829,9 +1021,20 @@ summary {
     grid-template-columns: 1fr;
   }
 
+  .hero-board,
+  .hero-launch-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .hero-metrics {
+    grid-template-columns: 1fr;
+  }
+
   .metric-grid,
   .metric-grid.compact,
-  .usecase-grid {
+  .usecase-grid,
+  .preset-grid,
+  .compare-card-grid {
     grid-template-columns: 1fr;
   }
 }
