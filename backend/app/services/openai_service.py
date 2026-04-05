@@ -109,6 +109,53 @@ class OpenAIService:
         except Exception:
             return self._fallback_diff_summary(diffs)
 
+    def summarize_evidence(
+        self,
+        document: DocumentSummary,
+        page: int,
+        section: str,
+        snippet: str,
+        question: str | None = None,
+    ) -> tuple[str, str]:
+        if not snippet.strip():
+            return f"Page {page}, {section}: no snippet available.", "deterministic_fallback"
+        if not self._client:
+            return self._fallback_evidence_summary(page, section, snippet), "deterministic_fallback"
+
+        system_prompt = (
+            "Summarize one payer-policy evidence excerpt in 1-2 concise sentences. "
+            "Focus on the actionable policy meaning, avoid repetition, and keep the summary specific to the page and section."
+        )
+        user_prompt = json.dumps(
+            {
+                "doc_id": document.doc_id,
+                "payer": document.payer,
+                "policy_name": document.policy_name,
+                "page": page,
+                "section": section,
+                "question": question,
+                "snippet": snippet,
+            },
+            indent=2,
+        )
+        try:
+            response = self._client.chat.completions.create(
+                model=settings.openai_model,
+                response_format={"type": "json_object"},
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+            )
+            payload = json.loads(response.choices[0].message.content or "{}")
+            summary = self._as_string(payload.get("summary"))
+            if summary == "unknown":
+                summary = self._fallback_evidence_summary(page, section, snippet)
+                return summary, "deterministic_fallback"
+            return summary, "openai"
+        except Exception:
+            return self._fallback_evidence_summary(page, section, snippet), "deterministic_fallback"
+
     def _fallback_record(
         self,
         document: DocumentSummary,
@@ -467,6 +514,15 @@ class OpenAIService:
         if cosmetic:
             summary += f" Additional cosmetic/admin changes: {', '.join(cosmetic[:3])}."
         return summary
+
+    def _fallback_evidence_summary(self, page: int, section: str, snippet: str) -> str:
+        condensed = " ".join(str(snippet).split())
+        if len(condensed) > 260:
+            condensed = condensed[:257].rstrip() + "..."
+        prefix = f"Page {page}, {section}:"
+        if condensed.lower().startswith(prefix.lower()):
+            return condensed
+        return f"{prefix} {condensed}"
 
     def _normalize_list_item(self, value) -> list[str]:
         if value in (None, "", "unknown"):

@@ -52,6 +52,17 @@ def initialize_database(sqlite_path: Path) -> None:
                 response_json TEXT NOT NULL,
                 created_at TEXT NOT NULL
             );
+
+            CREATE TABLE IF NOT EXISTS request_history (
+                history_id TEXT PRIMARY KEY,
+                kind TEXT NOT NULL,
+                title TEXT NOT NULL,
+                status TEXT NOT NULL,
+                request_json TEXT NOT NULL,
+                response_json TEXT NOT NULL,
+                summary TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            );
             """
         )
         columns = {row["name"] for row in connection.execute("PRAGMA table_info(documents)")}
@@ -63,4 +74,7 @@ def initialize_database(sqlite_path: Path) -> None:
                     raise
         connection.execute(
             "CREATE INDEX IF NOT EXISTS extraction_cache_lookup_idx ON extraction_cache (doc_id, drug_name, question)"
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS request_history_kind_created_idx ON request_history (kind, created_at DESC)"
         )

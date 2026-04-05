@@ -21,6 +21,30 @@ class DocumentSummary(BaseModel):
     version_group: str | None = None
 
 
+class RequestHistoryEntry(BaseModel):
+    history_id: str
+    kind: str
+    title: str
+    summary: str
+    status: str
+    question: str
+    drug_name: str
+    payer_filters: list[str] = Field(default_factory=list)
+    old_doc_id: str | None = None
+    new_doc_id: str | None = None
+    created_at: str
+
+
+class HistoryDetailResponse(RequestHistoryEntry):
+    request_payload: dict[str, Any] = Field(default_factory=dict)
+    response_payload: dict[str, Any] = Field(default_factory=dict)
+
+
+class HistoryDeleteResponse(BaseModel):
+    deleted: int
+    message: str
+
+
 class IndexBuildRequest(BaseModel):
     doc_ids: list[str] | None = None
     force: bool = False
@@ -45,6 +69,23 @@ class IndexSettingsResponse(BaseModel):
     enabled: bool
     running: bool
     detail: str
+
+
+class EvidenceSummaryRequest(BaseModel):
+    doc_id: str
+    page: int
+    section: str
+    snippet: str
+    question: str | None = None
+
+
+class EvidenceSummaryResponse(BaseModel):
+    doc_id: str
+    page: int
+    section: str
+    pdf_url: str
+    summary: str
+    source_method: str
 
 
 class AskRequest(BaseModel):

@@ -1,11 +1,16 @@
-import { useDeferredValue, useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   askPolicy,
   buildIndexes,
+  clearHistory,
   comparePolicies,
   diffPolicies,
+  documentPdfUrl,
   fetchDocuments,
+  fetchEvidenceSummary,
   fetchGraphStatus,
+  fetchHistory,
+  fetchHistoryDetail,
   fetchIndexSettings,
   updateIndexSettings
 } from "./api";
@@ -13,114 +18,150 @@ import {
 const DEFAULT_DRUG = "Infliximab";
 const MAX_MESSAGES = 60;
 
-const NAV_ITEMS = ["Policies", "Payers", "Analytics", "Archive"];
-const SIDE_ITEMS = [
-  { id: "dashboard", label: "Dashboard" },
-  { id: "review", label: "Review" },
-  { id: "settings", label: "Settings" }
+const TRACKER_TABS = [
+  { id: "home", label: "Home" },
+  { id: "ask", label: "Ask" },
+  { id: "compare", label: "Compare" },
+  { id: "changes", label: "Changes" },
+  { id: "history", label: "History" }
 ];
 
-const WORKFLOWS = [
+const USECASE_SECTIONS = [
   {
-    id: "coverage-scan",
-    label: "Coverage scan",
-    action: "compare",
-    description: "Compare multiple payers for one therapy.",
-    getQuestion: (drugName) =>
-      `How do payers cover ${drugName} under the medical benefit, including prior authorization, preferred products, and step therapy?`
+    id: "ask",
+    title: "Ask Use Cases",
+    description: "Single-payer questions with evidence-grounded answers.",
+    cases: [
+      {
+        id: "ask-aetna-ustekinumab",
+        label: "Aetna Ustekinumab",
+        tab: "ask",
+        drugName: "Ustekinumab",
+        payerFilters: ["Aetna"],
+        question:
+          "What prior authorization criteria does this payer require for ustekinumab, and what step therapy alternatives must be tried first?"
+      },
+      {
+        id: "ask-cigna-rituximab",
+        label: "Cigna Rituximab",
+        tab: "ask",
+        drugName: "Rituximab",
+        payerFilters: ["Cigna"],
+        question: "What prior authorization criteria apply for rituximab for non-oncology indications?"
+      },
+      {
+        id: "ask-emblem-denosumab",
+        label: "EmblemHealth Denosumab",
+        tab: "ask",
+        drugName: "Denosumab",
+        payerFilters: ["EmblemHealth"],
+        question: "What coverage, authorization, and HCPCS-related guidance does this payer give for denosumab?"
+      },
+      {
+        id: "ask-uhc-botulinum",
+        label: "UHC Botulinum Toxins",
+        tab: "ask",
+        drugName: "Botulinum Toxins",
+        payerFilters: ["UnitedHealthcare"],
+        question: "What diagnosis-specific criteria and authorization requirements apply to botulinum toxins under this policy?"
+      }
+    ]
   },
   {
-    id: "prior-auth-check",
-    label: "Prior auth check",
-    action: "ask",
-    description: "Inspect one payer's authorization criteria.",
-    getQuestion: (drugName, selectedPayers) =>
-      `What prior authorization criteria does ${selectedPayers[0] || "the selected payer"} require for ${drugName}?`
+    id: "compare",
+    title: "Compare Use Cases",
+    description: "Cross-payer comparisons for policy differences and access restrictions.",
+    cases: [
+      {
+        id: "compare-infliximab-medical-benefit",
+        label: "Infliximab Medical Benefit",
+        tab: "compare",
+        drugName: "Infliximab",
+        payerFilters: ["Aetna", "Cigna", "UnitedHealthcare"],
+        question:
+          "How do Aetna, Cigna, and UnitedHealthcare differ in coverage, prior authorization, preferred products, and step therapy for infliximab under the medical benefit?"
+      },
+      {
+        id: "compare-infliximab-biosimilar",
+        label: "Infliximab Biosimilar Preference",
+        tab: "compare",
+        drugName: "Infliximab",
+        payerFilters: ["Aetna", "Cigna", "UnitedHealthcare"],
+        question:
+          "Which infliximab products are preferred or non-preferred across Aetna, Cigna, and UnitedHealthcare, and how does that affect approval?"
+      },
+      {
+        id: "compare-ustekinumab",
+        label: "Ustekinumab Payer Compare",
+        tab: "compare",
+        drugName: "Ustekinumab",
+        payerFilters: ["Aetna", "Cigna"],
+        question:
+          "Compare Aetna and Cigna coverage rules for ustekinumab, including prior authorization and step therapy requirements."
+      },
+      {
+        id: "compare-bevacizumab",
+        label: "Bevacizumab Restriction Compare",
+        tab: "compare",
+        drugName: "Bevacizumab",
+        payerFilters: ["Florida Blue", "BCBS NC"],
+        question:
+          "How do Florida Blue and BCBS NC differ in coverage, prior authorization, and preferred-product restrictions for bevacizumab under the medical benefit?"
+      }
+    ]
   },
   {
-    id: "policy-change-watch",
-    label: "Policy change watch",
-    action: "changes",
-    description: "Compare two versions of a policy.",
-    getQuestion: (drugName) =>
-      `What changed between these policy versions for ${drugName}, and which changes are meaningful for coverage decisions?`
+    id: "changes",
+    title: "Change Tracking Use Cases",
+    description: "Version-to-version review using valid policy pairs present in the corpus.",
+    cases: [
+      {
+        id: "changes-uhc-jan-mar",
+        label: "UHC Jan to Mar Bulletin",
+        tab: "changes",
+        drugName: "Medical Policy Updates",
+        payerFilters: ["UnitedHealthcare"],
+        oldDocId: "medical-policy-update-bulletin-january-2026-full",
+        newDocId: "medical-policy-update-bulletin-march-2026-full",
+        question:
+          "What changed between the January 2026 and March 2026 UnitedHealthcare medical policy update bulletins, and which changes are meaningful for coverage decisions?"
+      },
+      {
+        id: "changes-uhc-jan-feb",
+        label: "UHC Jan to Feb Bulletin",
+        tab: "changes",
+        drugName: "Medical Policy Updates",
+        payerFilters: ["UnitedHealthcare"],
+        oldDocId: "medical-policy-update-bulletin-january-2026-full",
+        newDocId: "medical-policy-update-bulletin-february-2026-full",
+        question:
+          "Summarize the meaningful policy changes between the January 2026 and February 2026 UnitedHealthcare medical policy update bulletins."
+      },
+      {
+        id: "changes-uhc-feb-mar",
+        label: "UHC Feb to Mar Bulletin",
+        tab: "changes",
+        drugName: "Medical Policy Updates",
+        payerFilters: ["UnitedHealthcare"],
+        oldDocId: "medical-policy-update-bulletin-february-2026-full",
+        newDocId: "medical-policy-update-bulletin-march-2026-full",
+        question:
+          "What changed between the February 2026 and March 2026 UnitedHealthcare medical policy update bulletins?"
+      }
+    ]
   }
 ];
-
-const DEMO_SCENARIOS = [
-  {
-    id: "judge-primary",
-    title: "Judge Demo",
-    eyebrow: "Primary",
-    workflowId: "coverage-scan",
-    drugName: "Infliximab",
-    payerFilters: ["Aetna", "Cigna", "UnitedHealthcare"],
-    question:
-      "How do Aetna, Cigna, and UnitedHealthcare differ in coverage, prior authorization, preferred products, and step therapy for infliximab under the medical benefit?",
-    summary: "Best single-click storyline for the demo: evidence-backed payer comparison.",
-    detail: "Compares three strong payer documents with graph summary.",
-    accent: "blue"
-  },
-  {
-    id: "aetna-ustekinumab",
-    title: "Aetna Ustekinumab",
-    eyebrow: "Ask",
-    workflowId: "prior-auth-check",
-    drugName: "Ustekinumab",
-    payerFilters: ["Aetna"],
-    question:
-      "What prior authorization criteria does this payer require for ustekinumab, and what step therapy alternatives must be tried first?",
-    summary: "Shows a clean, high-confidence prior auth extraction.",
-    detail: "PageIndex retrieval surfaces criteria and step edits reliably.",
-    accent: "amber"
-  },
-  {
-    id: "cigna-rituximab",
-    title: "Cigna Rituximab",
-    eyebrow: "Ask",
-    workflowId: "prior-auth-check",
-    drugName: "Rituximab",
-    payerFilters: ["Cigna"],
-    question:
-      "What prior authorization criteria apply for rituximab for non-oncology indications?",
-    summary: "Good single-payer example for operational authorization logic.",
-    detail: "Useful to show extraction from a focused Cigna policy.",
-    accent: "teal"
-  },
-  {
-    id: "uhc-infliximab-changes",
-    title: "UHC Infliximab Changes",
-    eyebrow: "Changes",
-    workflowId: "policy-change-watch",
-    drugName: "Infliximab",
-    payerFilters: ["UnitedHealthcare"],
-    question:
-      "What changed between these policy versions, and which changes are meaningful for coverage decisions?",
-    summary: "Version watch with narrative summary plus field-level deltas.",
-    detail: "Uses the strongest known UHC infliximab version pair.",
-    accent: "rose"
-  }
-];
-
-function groupPayers(documents) {
-  return [...new Set(documents.map((doc) => doc.payer))].filter(Boolean).sort();
-}
 
 function normalizeText(value) {
   return String(value || "").trim().toLowerCase();
 }
 
-function formatList(items) {
-  return items?.filter(Boolean).join(", ") || "none";
+function groupPayers(documents) {
+  return [...new Set(documents.map((doc) => doc.payer))].filter(Boolean).sort();
 }
 
-function countBy(items, resolver) {
-  return items.reduce((counts, item) => {
-    const key = resolver(item);
-    if (!key) return counts;
-    counts[key] = (counts[key] || 0) + 1;
-    return counts;
-  }, {});
+function formatList(items) {
+  return items?.filter(Boolean).join(", ") || "none";
 }
 
 function createMessage(role, kind, payload = {}) {
@@ -133,26 +174,31 @@ function createMessage(role, kind, payload = {}) {
   };
 }
 
-function getDocumentLabel(documents, docId) {
-  return documents.find((doc) => doc.doc_id === docId)?.policy_name || "Unknown document";
-}
-
 function buildCompareHighlights(rows = []) {
   if (!rows.length) return [];
-  const coveredCount = rows.filter((row) => normalizeText(row.coverage).includes("covered")).length;
-  const priorAuthCount = rows.filter((row) => normalizeText(row.prior_auth).startsWith("yes")).length;
-  const stepCount = rows.filter((row) => normalizeText(row.step_therapy).startsWith("yes")).length;
   return [
-    { label: "Covered", value: coveredCount, detail: `${rows.length} payer rows` },
-    { label: "Prior auth", value: priorAuthCount, detail: "policies requiring PA" },
-    { label: "Step therapy", value: stepCount, detail: "policies with step edits" }
+    {
+      label: "Covered",
+      value: rows.filter((row) => normalizeText(row.coverage).includes("covered")).length,
+      detail: `${rows.length} payer rows`
+    },
+    {
+      label: "Prior auth",
+      value: rows.filter((row) => normalizeText(row.prior_auth).startsWith("yes")).length,
+      detail: "policies requiring PA"
+    },
+    {
+      label: "Step therapy",
+      value: rows.filter((row) => normalizeText(row.step_therapy).startsWith("yes")).length,
+      detail: "policies with step edits"
+    }
   ];
 }
 
 function pickVersionPair(documents, drugName, preferredPayer = "") {
   const lowered = normalizeText(drugName);
   const preferred = normalizeText(preferredPayer);
-  const filtered = documents.filter((doc) => {
+  const candidates = documents.filter((doc) => {
     const policy = normalizeText(doc.policy_name);
     const likely = normalizeText(doc.likely_drug);
     const payer = normalizeText(doc.payer);
@@ -162,11 +208,11 @@ function pickVersionPair(documents, drugName, preferredPayer = "") {
   });
 
   const grouped = new Map();
-  for (const doc of filtered) {
+  for (const doc of candidates) {
     if (!doc.version_group) continue;
-    const items = grouped.get(doc.version_group) || [];
-    items.push(doc);
-    grouped.set(doc.version_group, items);
+    const group = grouped.get(doc.version_group) || [];
+    group.push(doc);
+    grouped.set(doc.version_group, group);
   }
 
   const viable = [...grouped.values()]
@@ -184,125 +230,208 @@ function pickVersionPair(documents, drugName, preferredPayer = "") {
   };
 }
 
-function pickScenarioVersionPair(documents, scenario) {
-  if (scenario.id === "uhc-infliximab-changes") {
-    const exactOld = documents.find((doc) => doc.doc_id === "infliximab-remicade-inflectra");
-    const exactNew = documents.find((doc) => doc.doc_id === "infliximab-remicade-inflectra-02012026");
-    if (exactOld && exactNew) {
+function buildLooseChangeGroupKey(doc) {
+  return `${doc.payer} ${doc.policy_name}`
+    .toLowerCase()
+    .replace(/\b(january|february|march|april|may|june|july|august|september|october|november|december)\b/g, "")
+    .replace(/\b(20\d{2}|\d{8})\b/g, "")
+    .replace(/\b(full|current)\b/g, "")
+    .replace(/[\W_]+/g, " ")
+    .trim();
+}
+
+function deriveValidChangePairs(documents) {
+  const grouped = new Map();
+  for (const doc of documents) {
+    const key = doc.version_group || buildLooseChangeGroupKey(doc);
+    if (!key) continue;
+    const items = grouped.get(key) || [];
+    items.push(doc);
+    grouped.set(key, items);
+  }
+
+  return [...grouped.entries()]
+    .filter(([, items]) => items.length >= 2)
+    .map(([pairId, items]) => {
+      const ordered = items
+        .slice()
+        .sort((left, right) =>
+          `${left.version_label} ${left.policy_name}`.localeCompare(`${right.version_label} ${right.policy_name}`)
+        );
+      const first = ordered[0];
+      const last = ordered[ordered.length - 1];
       return {
-        oldDocId: exactOld.doc_id,
-        newDocId: exactNew.doc_id
+        pairId,
+        title: `${first.payer} · ${first.policy_name}`,
+        oldDocId: first.doc_id,
+        newDocId: last.doc_id,
+        oldLabel: first.policy_name,
+        newLabel: last.policy_name,
+        payer: first.payer,
+        drugName: first.likely_drug || first.policy_name,
       };
-    }
-    return pickVersionPair(documents, scenario.drugName, scenario.payerFilters?.[0]);
-  }
-  return pickVersionPair(documents, scenario.drugName, scenario.payerFilters?.[0]);
+    })
+    .sort((left, right) => left.title.localeCompare(right.title));
 }
 
-function metricTrendLabel(graphStatus, indexSettings) {
-  if (graphStatus?.connected && indexSettings?.enabled) return "Fully primed";
-  if (graphStatus?.connected) return "Graph online";
-  return "Local fallback";
-}
-
-function summarizeCoverage(rows = []) {
-  if (!rows.length) return "Run the judge demo to surface payer differences.";
-  const mostRestrictive = rows.find((row) => normalizeText(row.step_therapy).startsWith("yes")) || rows[0];
-  return `${mostRestrictive.payer} shows the strongest utilization management signal in the current compare result.`;
-}
-
-function extractCriteriaPoints(record) {
-  const points = [];
-  if (record.prior_auth_criteria && normalizeText(record.prior_auth_criteria) !== "unknown") {
-    points.push(record.prior_auth_criteria);
-  }
-  if (record.step_therapy && normalizeText(record.step_therapy) !== "unknown") {
-    points.push(record.step_therapy);
-  }
-  if (record.site_of_care && normalizeText(record.site_of_care) !== "unknown") {
-    points.push(record.site_of_care);
-  }
-  return points.slice(0, 3);
+function getDocumentLabel(documents, docId) {
+  return documents.find((doc) => doc.doc_id === docId)?.policy_name || "Unknown document";
 }
 
 function statusTone(status = "") {
   const normalized = normalizeText(status);
-  if (normalized === "complete" || normalized === "answered") return "success";
-  if (normalized === "partial" || normalized === "review required") return "warning";
+  if (normalized === "answered" || normalized === "complete") return "success";
+  if (normalized === "review required" || normalized === "partial") return "warning";
   return "neutral";
 }
 
+function humanizeFieldLabel(field) {
+  return field.replaceAll("_", " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
+function compactValue(value) {
+  if (Array.isArray(value)) return value.filter(Boolean).join(", ") || "none";
+  return String(value || "unknown");
+}
+
+function buildReadableAskSummary(record) {
+  const parts = [];
+  parts.push(`Coverage is ${record.coverage_status}.`);
+  if (record.prior_auth_required !== "unknown") {
+    parts.push(`Prior authorization is ${record.prior_auth_required}.`);
+  }
+  if (record.step_therapy !== "unknown") {
+    parts.push(`Step therapy is noted.`);
+  }
+  if (record.site_of_care !== "unknown") {
+    parts.push(`Site of care guidance is present.`);
+  }
+  if (record.effective_date !== "unknown" && record.effective_date !== "not stated in snippets") {
+    parts.push(`Effective date: ${record.effective_date}.`);
+  }
+  return parts.join(" ");
+}
+
+function buildAskHighlights(record) {
+  const highlights = [];
+  if (record.coverage_status !== "unknown") {
+    highlights.push(`Coverage: ${record.coverage_status}`);
+  }
+  if (record.prior_auth_required !== "unknown") {
+    highlights.push(`Prior auth: ${record.prior_auth_required}`);
+  }
+  if (record.step_therapy !== "unknown") {
+    highlights.push(`Step therapy: ${record.step_therapy}`);
+  }
+  if (record.site_of_care !== "unknown") {
+    highlights.push(`Site of care: ${record.site_of_care}`);
+  }
+  if (record.covered_indications?.length) {
+    highlights.push(`Covered indications: ${record.covered_indications.slice(0, 4).join(", ")}`);
+  }
+  return highlights.slice(0, 4);
+}
+
+function extractHistoryExplanation(detail) {
+  const payload = detail?.response_payload || {};
+  if (detail.kind === "ask") {
+    const records = payload.records || [];
+    if (!records.length) return detail.summary;
+    return `Returned ${records.length} payer records. ${records[0].payer}: ${buildReadableAskSummary(records[0])}`;
+  }
+  if (detail.kind === "compare") {
+    const rows = payload.rows || [];
+    if (!rows.length) return detail.summary;
+    return `Compared ${rows.length} payer rows. ${rows.map((row) => `${row.payer}: ${row.coverage}`).join(" | ")}`;
+  }
+  if (detail.kind === "changes") {
+    return payload.narrative_summary || detail.summary;
+  }
+  return detail.summary;
+}
+
 function Icon({ name }) {
-  const common = { width: 16, height: 16, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: "1.75", strokeLinecap: "round", strokeLinejoin: "round" };
-  if (name === "dashboard") {
-    return (
-      <svg {...common} aria-hidden="true">
-        <rect x="3" y="3" width="7" height="7" rx="1.5" />
-        <rect x="14" y="3" width="7" height="4" rx="1.5" />
-        <rect x="14" y="10" width="7" height="11" rx="1.5" />
-        <rect x="3" y="13" width="7" height="8" rx="1.5" />
+  const common = {
+    width: 16,
+    height: 16,
+    viewBox: "0 0 24 24",
+    fill: "none",
+    stroke: "currentColor",
+    strokeWidth: "1.75",
+    strokeLinecap: "round",
+    strokeLinejoin: "round"
+  };
+  const map = {
+    home: (
+      <svg {...common}>
+        <path d="M3 10.5 12 3l9 7.5" />
+        <path d="M5 9.5V21h14V9.5" />
       </svg>
-    );
-  }
-  if (name === "review") {
-    return (
-      <svg {...common} aria-hidden="true">
-        <path d="M4 5h16v14H4z" />
-        <path d="M8 9h8" />
-        <path d="M8 13h5" />
-        <path d="M8 17h4" />
+    ),
+    ask: (
+      <svg {...common}>
+        <path d="M12 18h.01" />
+        <path d="M9.09 9a3 3 0 1 1 5.82 1c0 2-3 3-3 3" />
+        <circle cx="12" cy="12" r="9" />
       </svg>
-    );
-  }
-  if (name === "settings") {
-    return (
-      <svg {...common} aria-hidden="true">
-        <circle cx="12" cy="12" r="3.5" />
-        <path d="M19.4 15a1 1 0 0 0 .2 1.1l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1 1 0 0 0-1.1-.2 1 1 0 0 0-.6.9V20a2 2 0 1 1-4 0v-.2a1 1 0 0 0-.7-.9 1 1 0 0 0-1.1.2l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1 1 0 0 0 .2-1.1 1 1 0 0 0-.9-.6H4a2 2 0 1 1 0-4h.2a1 1 0 0 0 .9-.7 1 1 0 0 0-.2-1.1l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1 1 0 0 0 1.1.2 1 1 0 0 0 .6-.9V4a2 2 0 1 1 4 0v.2a1 1 0 0 0 .7.9 1 1 0 0 0 1.1-.2l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1 1 0 0 0-.2 1.1 1 1 0 0 0 .9.6h.2a2 2 0 1 1 0 4h-.2a1 1 0 0 0-.9.7z" />
+    ),
+    compare: (
+      <svg {...common}>
+        <path d="M7 4v16" />
+        <path d="M17 4v16" />
+        <path d="M7 8h10" />
+        <path d="M7 16h10" />
       </svg>
-    );
-  }
-  if (name === "search") {
-    return (
-      <svg {...common} aria-hidden="true">
+    ),
+    changes: (
+      <svg {...common}>
+        <path d="M3 12a9 9 0 0 1 15.5-6.2L21 8" />
+        <path d="M21 3v5h-5" />
+        <path d="M21 12a9 9 0 0 1-15.5 6.2L3 16" />
+        <path d="M3 21v-5h5" />
+      </svg>
+    ),
+    history: (
+      <svg {...common}>
+        <path d="M12 8v5l3 2" />
+        <path d="M3.05 11A9 9 0 1 1 6 18.3" />
+        <path d="M3 4v7h7" />
+      </svg>
+    ),
+    search: (
+      <svg {...common}>
         <circle cx="11" cy="11" r="6" />
         <path d="m20 20-3.5-3.5" />
       </svg>
-    );
-  }
-  if (name === "profile") {
-    return (
-      <svg {...common} aria-hidden="true">
-        <path d="M20 21a8 8 0 0 0-16 0" />
-        <circle cx="12" cy="7" r="4" />
-      </svg>
-    );
-  }
-  if (name === "spark") {
-    return (
-      <svg {...common} aria-hidden="true">
-        <path d="M12 3 13.9 8.1 19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9L12 3Z" />
-      </svg>
-    );
-  }
-  if (name === "send") {
-    return (
-      <svg {...common} aria-hidden="true">
+    ),
+    launch: (
+      <svg {...common}>
         <path d="m22 2-7 20-4-9-9-4 20-7Z" />
         <path d="M22 2 11 13" />
       </svg>
-    );
-  }
-  return null;
+    ),
+    file: (
+      <svg {...common}>
+        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+        <path d="M14 2v6h6" />
+      </svg>
+    ),
+    chevron: (
+      <svg {...common}>
+        <path d="m6 9 6 6 6-6" />
+      </svg>
+    )
+  };
+  return map[name] || null;
 }
 
 function StatusPill({ tone = "neutral", children }) {
   return <span className={`status-pill ${tone}`}>{children}</span>;
 }
 
-function MetricTile({ label, value, detail, tone = "neutral" }) {
+function MetricTile({ label, value, detail }) {
   return (
-    <article className={`metric-tile ${tone}`}>
+    <article className="metric-tile">
       <span>{label}</span>
       <strong>{value}</strong>
       <small>{detail}</small>
@@ -310,51 +439,146 @@ function MetricTile({ label, value, detail, tone = "neutral" }) {
   );
 }
 
-function EvidenceList({ evidence }) {
+function SpinnerLabel({ text }) {
+  return (
+    <span className="spinner-label">
+      <span className="spinner-dot" />
+      <span>{text}</span>
+    </span>
+  );
+}
+
+function EvidenceCard({ docId, evidence, question }) {
+  const [open, setOpen] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [summary, setSummary] = useState("");
+  const [sourceMethod, setSourceMethod] = useState("");
+  const [error, setError] = useState("");
+
+  async function handleToggle() {
+    const next = !open;
+    setOpen(next);
+    if (!next || summary || loading) return;
+    setLoading(true);
+    setError("");
+    try {
+      const result = await fetchEvidenceSummary({
+        doc_id: docId,
+        page: evidence.page,
+        section: evidence.section,
+        snippet: evidence.snippet,
+        question
+      });
+      setSummary(result.summary);
+      setSourceMethod(result.source_method);
+    } catch (requestError) {
+      setError(requestError.message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <article className="evidence-card">
+      <div className="evidence-meta">
+        <span>Page {evidence.page}</span>
+        <span>{evidence.section}</span>
+        <span>{evidence.retrieval_method}</span>
+      </div>
+      <p>{evidence.snippet}</p>
+      <div className="evidence-actions">
+        <a href={documentPdfUrl(docId, evidence.page)} target="_blank" rel="noreferrer" className="link-button">
+          <Icon name="file" />
+          <span>Open PDF page</span>
+        </a>
+        <button type="button" className="ghost-button" onClick={handleToggle}>
+          <span>{open ? "Hide page summary" : "Show page summary"}</span>
+          <Icon name="chevron" />
+        </button>
+      </div>
+      {open ? (
+        <div className="dropdown-panel">
+          {loading ? <SpinnerLabel text="Generating page summary..." /> : null}
+          {error ? <p className="error-inline">{error}</p> : null}
+          {!loading && !error && summary ? (
+            <>
+              <p>{summary}</p>
+              <small>{sourceMethod === "openai" ? "Generated with OpenAI" : "Fallback summary"}</small>
+            </>
+          ) : null}
+        </div>
+      ) : null}
+    </article>
+  );
+}
+
+function EvidenceList({ docId, evidence, question }) {
   if (!evidence?.length) return <p className="muted">No evidence snippets returned.</p>;
   return (
     <div className="evidence-list">
       {evidence.map((item, index) => (
-        <article key={`${item.page}-${index}`} className="evidence-card">
-          <div className="evidence-meta">
-            <span>Page {item.page}</span>
-            <span>{item.section}</span>
-            <span>{item.retrieval_method}</span>
-          </div>
-          <p>{item.snippet}</p>
-        </article>
+        <EvidenceCard key={`${item.page}-${index}`} docId={docId} evidence={item} question={question} />
       ))}
     </div>
   );
 }
 
-function AskPreview({ records }) {
+function AskRecordCard({ record, question }) {
+  const highlights = buildAskHighlights(record);
+  return (
+    <article className="result-card">
+      <div className="result-head">
+        <div>
+          <h4>{record.payer}</h4>
+          <p className="muted">{record.policy_name}</p>
+        </div>
+        <StatusPill tone={statusTone(record.status)}>{record.status}</StatusPill>
+      </div>
+
+      <div className="summary-band">
+        <strong>Readable summary</strong>
+        <p>{buildReadableAskSummary(record)}</p>
+      </div>
+
+      <div className="highlight-list">
+        {highlights.map((item) => (
+          <div key={item} className="highlight-item">
+            {item}
+          </div>
+        ))}
+      </div>
+
+      <details className="details-block">
+        <summary>Detailed explanation</summary>
+        <div className="details-grid">
+          <p><strong>Answer:</strong> {record.answer}</p>
+          <p><strong>Prior auth criteria:</strong> {compactValue(record.prior_auth_criteria)}</p>
+          <p><strong>Covered indications:</strong> {compactValue(record.covered_indications)}</p>
+          <p><strong>Biosimilars:</strong> {compactValue(record.biosimilar_reference_relationships)}</p>
+          <p><strong>Effective date:</strong> {record.effective_date}</p>
+          <p><strong>Site of care:</strong> {record.site_of_care}</p>
+        </div>
+      </details>
+
+      {record.graph_context ? (
+        <div className="insight-callout">
+          <strong>Graph context</strong>
+          <p className="muted">{record.graph_context.status_message}</p>
+          <p className="muted">Known payers: {formatList(record.graph_context.known_payers_for_drug)}</p>
+          <p className="muted">Known versions: {formatList(record.graph_context.known_versions_for_policy)}</p>
+        </div>
+      ) : null}
+
+      <EvidenceList docId={record.doc_id} evidence={record.evidence} question={question} />
+    </article>
+  );
+}
+
+function AskPreview({ records, question }) {
   return (
     <div className="message-stack">
       {records.map((record) => (
-        <article key={record.doc_id} className="message-card">
-          <div className="card-head">
-            <div>
-              <h4>{record.payer}</h4>
-              <p className="muted">{record.policy_name}</p>
-            </div>
-            <StatusPill tone={statusTone(record.status)}>{record.status}</StatusPill>
-          </div>
-          <p className="message-summary">{record.answer}</p>
-          <div className="signal-row">
-            <span>Coverage: {record.coverage_status}</span>
-            <span>PA: {record.prior_auth_required}</span>
-            <span>Confidence: {record.confidence}</span>
-          </div>
-          {record.graph_context ? (
-            <div className="context-panel">
-              <strong>Graph context</strong>
-              <p className="muted">{record.graph_context.status_message}</p>
-              <p className="muted">Known payers: {formatList(record.graph_context.known_payers_for_drug)}</p>
-            </div>
-          ) : null}
-          <EvidenceList evidence={record.evidence} />
-        </article>
+        <AskRecordCard key={record.doc_id} record={record} question={question} />
       ))}
     </div>
   );
@@ -364,19 +588,19 @@ function ComparePreview({ rows, graphSummary }) {
   const highlights = buildCompareHighlights(rows);
   return (
     <div className="message-stack">
-      <div className="metric-row compact">
+      <div className="metric-grid compact">
         {highlights.map((item) => (
           <MetricTile key={item.label} {...item} />
         ))}
       </div>
       {graphSummary ? (
-        <div className="context-panel">
+        <div className="insight-callout">
           <strong>Graph summary</strong>
           <p className="muted">{graphSummary.status_message}</p>
           <p className="muted">Payers: {formatList(graphSummary.payer_names)}</p>
         </div>
       ) : null}
-      <div className="table-shell">
+      <div className="table-wrap">
         <table>
           <thead>
             <tr>
@@ -409,8 +633,8 @@ function ComparePreview({ rows, graphSummary }) {
 function ChangesPreview({ changeResult }) {
   return (
     <div className="message-stack">
-      <article className="message-card">
-        <div className="card-head">
+      <article className="result-card">
+        <div className="result-head">
           <div>
             <h4>Change summary</h4>
             <p className="muted">
@@ -419,37 +643,34 @@ function ChangesPreview({ changeResult }) {
           </div>
           <StatusPill tone="warning">{changeResult.diffs.length} fields</StatusPill>
         </div>
-        <p className="message-summary">{changeResult.narrative_summary}</p>
+        <div className="summary-band">
+          <strong>Readable summary</strong>
+          <p>{changeResult.narrative_summary}</p>
+        </div>
+
+        <details className="details-block">
+          <summary>Detailed explanation</summary>
+          <div className="details-grid">
+            {changeResult.diffs.map((diff) => (
+              <div key={diff.field} className="change-line">
+                <strong>{humanizeFieldLabel(diff.field)}:</strong> {compactValue(diff.old_value)} → {compactValue(diff.new_value)}
+              </div>
+            ))}
+          </div>
+        </details>
       </article>
 
       {changeResult.graph_summary ? (
-        <article className="message-card subtle">
-          <div className="card-head">
+        <article className="result-card">
+          <div className="result-head">
             <h4>Graph delta</h4>
             <StatusPill tone={changeResult.graph_summary.enabled ? "success" : "neutral"}>
               {changeResult.graph_summary.enabled ? "neo4j" : "fallback"}
             </StatusPill>
           </div>
-          <p className="message-summary">{changeResult.graph_summary.summary}</p>
-          <div className="signal-row">
-            <span>Added indications: {formatList(changeResult.graph_summary.added_indications)}</span>
-            <span>Removed indications: {formatList(changeResult.graph_summary.removed_indications)}</span>
-          </div>
+          <p>{changeResult.graph_summary.summary}</p>
         </article>
       ) : null}
-
-      <div className="diff-grid">
-        {changeResult.diffs.map((diff) => (
-          <article key={diff.field} className="diff-card">
-            <div className="card-head">
-              <h4>{diff.field}</h4>
-              <StatusPill tone="neutral">{diff.change_type}</StatusPill>
-            </div>
-            <p className="muted">Old: {JSON.stringify(diff.old_value)}</p>
-            <p>New: {JSON.stringify(diff.new_value)}</p>
-          </article>
-        ))}
-      </div>
     </div>
   );
 }
@@ -457,13 +678,13 @@ function ChangesPreview({ changeResult }) {
 function MessageBubble({ message }) {
   return (
     <article className={`message-bubble ${message.role}`}>
-      <div className="bubble-head">
+      <div className="message-meta">
         <span>{message.role === "user" ? "Analyst" : "Anton Copilot"}</span>
         <span>{message.timestamp}</span>
       </div>
       {message.title ? <h3>{message.title}</h3> : null}
       {message.text ? <p>{message.text}</p> : null}
-      {message.kind === "ask" ? <AskPreview records={message.records} /> : null}
+      {message.kind === "ask" ? <AskPreview records={message.records} question={message.question} /> : null}
       {message.kind === "compare" ? <ComparePreview rows={message.rows} graphSummary={message.graphSummary} /> : null}
       {message.kind === "changes" ? <ChangesPreview changeResult={message.changeResult} /> : null}
       {message.kind === "system" && message.meta ? <p className="muted">{message.meta}</p> : null}
@@ -471,153 +692,141 @@ function MessageBubble({ message }) {
   );
 }
 
-function HeroSpotlight({ compareResult, askResult, changeResult }) {
-  if (compareResult?.rows?.length) {
-    const lead = compareResult.rows[0];
-    const secondary = compareResult.rows[1];
-    const tertiary = compareResult.rows[2];
-    return (
-      <section className="spotlight-panel">
-        <div className="prompt-chip">
-          <span>Active insight</span>
-          <p>{summarizeCoverage(compareResult.rows)}</p>
-        </div>
-        <div className="spotlight-grid">
-          {[lead, secondary].filter(Boolean).map((row, index) => (
-            <article key={`${row.payer}-${row.policy_name}`} className={`policy-spotlight ${index === 0 ? "primary" : "secondary"}`}>
-              <div className="policy-topline">
-                <div>
-                  <span className="policy-micro">{row.payer}</span>
-                  <h3>{row.coverage}</h3>
-                </div>
-                <StatusPill tone={index === 0 ? "neutral" : "warning"}>{index === 0 ? "Primary" : "Comparative"}</StatusPill>
-              </div>
-              <ul className="criteria-list">
-                <li>{row.prior_auth}</li>
-                <li>{row.step_therapy}</li>
-                <li>{row.site_of_care}</li>
-              </ul>
-            </article>
-          ))}
-        </div>
-        {tertiary ? (
-          <div className="projection-card">
-            <span>Additional payer</span>
-            <strong>{tertiary.payer}</strong>
-            <p>{tertiary.coverage}</p>
-          </div>
-        ) : null}
-      </section>
-    );
-  }
-
-  if (askResult?.records?.length) {
-    const lead = askResult.records[0];
-    return (
-      <section className="spotlight-panel single">
-        <div className="prompt-chip">
-          <span>Current answer</span>
-          <p>{lead.answer}</p>
-        </div>
-        <article className="ask-spotlight">
-          <div className="policy-topline">
-            <div>
-              <span className="policy-micro">{lead.payer}</span>
-              <h3>{lead.coverage_status}</h3>
-            </div>
-            <StatusPill tone={statusTone(lead.status)}>{lead.status}</StatusPill>
-          </div>
-          <ul className="criteria-list">
-            {extractCriteriaPoints(lead).map((item) => (
-              <li key={item}>{item}</li>
-            ))}
-          </ul>
-        </article>
-      </section>
-    );
-  }
-
-  if (changeResult) {
-    return (
-      <section className="spotlight-panel single">
-        <div className="prompt-chip">
-          <span>Version watch</span>
-          <p>{changeResult.narrative_summary}</p>
-        </div>
-        <article className="projection-card wide">
-          <span>Changed fields</span>
-          <strong>{changeResult.diffs.length}</strong>
-          <p>{changeResult.graph_summary?.summary || "Narrative diff ready for review."}</p>
-        </article>
-      </section>
-    );
-  }
-
+function HistoryCard({ entry, detail, loading, onToggle }) {
   return (
-    <section className="spotlight-panel empty">
-      <div className="prompt-chip">
-        <span>Suggested move</span>
-        <p>Run the Judge Demo for the strongest compare flow, then use Ask or Changes to drill deeper.</p>
+    <article className="history-card">
+      <div className="result-head">
+        <div>
+          <h3>{entry.title}</h3>
+          <p className="muted">
+            {entry.kind} · {new Date(entry.created_at).toLocaleString()}
+          </p>
+        </div>
+        <StatusPill tone={statusTone(entry.status)}>{entry.kind}</StatusPill>
       </div>
-      <div className="projection-card wide muted-card">
-        <span>System behavior</span>
-        <strong>PageIndex + Graph</strong>
-        <p>Evidence comes from structured PDF sections first, then the extracted rules are persisted for cross-payer analysis.</p>
+
+      <div className="summary-band">
+        <strong>Summary</strong>
+        <p>{detail ? extractHistoryExplanation(detail) : entry.summary}</p>
       </div>
-    </section>
+
+      <div className="tag-row">
+        <span>Drug: {entry.drug_name || "unknown"}</span>
+        <span>Payers: {formatList(entry.payer_filters || [])}</span>
+      </div>
+
+      <button type="button" className="ghost-button history-toggle" onClick={onToggle}>
+        <span>{detail ? "Hide details" : "Show details"}</span>
+        <Icon name="chevron" />
+      </button>
+
+      {loading ? <SpinnerLabel text="Loading saved details..." /> : null}
+      {detail ? (
+        <div className="dropdown-panel">
+          {detail.kind === "ask" ? (
+            <AskPreview records={detail.response_payload.records || []} question={detail.question} />
+          ) : null}
+          {detail.kind === "compare" ? (
+            <ComparePreview
+              rows={detail.response_payload.rows || []}
+              graphSummary={detail.response_payload.graph_summary || null}
+            />
+          ) : null}
+          {detail.kind === "changes" ? (
+            <ChangesPreview changeResult={detail.response_payload} />
+          ) : null}
+
+          <details className="details-block">
+            <summary>Request and response payload</summary>
+            <div className="payload-grid">
+              <div>
+                <strong>Request</strong>
+                <pre>{JSON.stringify(detail.request_payload, null, 2)}</pre>
+              </div>
+              <div>
+                <strong>Response</strong>
+                <pre>{JSON.stringify(detail.response_payload, null, 2)}</pre>
+              </div>
+            </div>
+          </details>
+        </div>
+      ) : null}
+    </article>
   );
 }
 
 export default function App() {
   const [documents, setDocuments] = useState([]);
+  const [graphStatus, setGraphStatus] = useState(null);
+  const [indexSettings, setIndexSettings] = useState(null);
+  const [historyEntries, setHistoryEntries] = useState([]);
+  const [historyDetails, setHistoryDetails] = useState({});
+  const [historyLoading, setHistoryLoading] = useState({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
+  const [activeTab, setActiveTab] = useState("home");
+  const [activeUseCaseId, setActiveUseCaseId] = useState("");
   const [drugName, setDrugName] = useState(DEFAULT_DRUG);
-  const [question, setQuestion] = useState("");
-  const [selectedPayers, setSelectedPayers] = useState([]);
+  const [question, setQuestion] = useState(USECASE_SECTIONS[1].cases[0].question);
+  const [selectedPayers, setSelectedPayers] = useState(["Aetna", "Cigna", "UnitedHealthcare"]);
   const [oldDocId, setOldDocId] = useState("");
   const [newDocId, setNewDocId] = useState("");
-  const [graphStatus, setGraphStatus] = useState(null);
-  const [indexSettings, setIndexSettings] = useState(null);
   const [compareResult, setCompareResult] = useState(null);
   const [askResult, setAskResult] = useState(null);
   const [changeResult, setChangeResult] = useState(null);
   const [indexResult, setIndexResult] = useState(null);
   const [messages, setMessages] = useState([]);
-  const [activeWorkflowId, setActiveWorkflowId] = useState(WORKFLOWS[0].id);
-  const [activeScenarioId, setActiveScenarioId] = useState("judge-primary");
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isIndexing, setIsIndexing] = useState(false);
   const [isUpdatingIndexSettings, setIsUpdatingIndexSettings] = useState(false);
 
-  const deferredDrugName = useDeferredValue(drugName);
+  const payers = useMemo(() => groupPayers(documents), [documents]);
+  const validChangePairs = useMemo(() => deriveValidChangePairs(documents), [documents]);
+  const compareHighlights = useMemo(
+    () => buildCompareHighlights(compareResult?.rows || []),
+    [compareResult]
+  );
+  const recentHistory = useMemo(() => historyEntries.slice(0, 12), [historyEntries]);
+  const matchingDocuments = useMemo(() => {
+    const lowered = normalizeText(drugName);
+    if (!lowered) return documents;
+    return documents.filter((doc) => {
+      const policy = normalizeText(doc.policy_name);
+      const likely = normalizeText(doc.likely_drug);
+      return policy.includes(lowered) || likely.includes(lowered);
+    });
+  }, [documents, drugName]);
 
   useEffect(() => {
     async function load() {
       try {
-        const [docs, graph, indexConfig] = await Promise.all([
+        const [docs, graph, indexConfig, history] = await Promise.all([
           fetchDocuments(),
           fetchGraphStatus(),
-          fetchIndexSettings()
+          fetchIndexSettings(),
+          fetchHistory()
         ]);
-        const payers = groupPayers(docs);
-        const pair = pickVersionPair(docs, DEFAULT_DRUG, "UnitedHealthcare");
-        const initialPayers = ["Aetna", "Cigna", "UnitedHealthcare"].filter((payer) => payers.includes(payer));
+        const defaultPair = deriveValidChangePairs(docs)[0] || pickVersionPair(docs, DEFAULT_DRUG, "UnitedHealthcare");
+        const defaultPayers = ["Aetna", "Cigna", "UnitedHealthcare"].filter((payer) => groupPayers(docs).includes(payer));
 
         setDocuments(docs);
         setGraphStatus(graph);
         setIndexSettings(indexConfig);
-        setSelectedPayers(initialPayers.length ? initialPayers : payers.slice(0, 3));
-        setQuestion(DEMO_SCENARIOS[0].question);
-        setOldDocId(pair?.oldDocId || docs[0]?.doc_id || "");
-        setNewDocId(pair?.newDocId || docs[1]?.doc_id || "");
-
+        setHistoryEntries(history);
+        setSelectedPayers(defaultPayers.length ? defaultPayers : groupPayers(docs).slice(0, 3));
+        if (defaultPair) {
+          setOldDocId(defaultPair.oldDocId);
+          setNewDocId(defaultPair.newDocId);
+        } else if (docs.length >= 2) {
+          setOldDocId(docs[0].doc_id);
+          setNewDocId(docs[1].doc_id);
+        }
         setMessages([
           createMessage("assistant", "system", {
-            title: "Anton Rx analytics board ready",
-            text: "Use the single-click demo cards for judge flows, or drive the backend manually from the analyst console.",
-            meta: `${docs.length} documents loaded across ${payers.length} payers.`
+            title: "Workspace ready",
+            text: "Use the grouped use cases to open the right tracker and type naturally. Evidence cards now link back to the source PDF page and can generate page summaries.",
+            meta: `${docs.length} documents loaded across ${groupPayers(docs).length} payers.`
           })
         ]);
       } catch (loadError) {
@@ -626,68 +835,42 @@ export default function App() {
         setLoading(false);
       }
     }
-
     load();
   }, []);
 
   useEffect(() => {
     if (!documents.length) return;
-    const pair = pickVersionPair(documents, drugName, selectedPayers[0]);
+    const pair = pickVersionPair(documents, drugName, selectedPayers[0]) || validChangePairs[0];
     if (pair) {
       setOldDocId(pair.oldDocId);
       setNewDocId(pair.newDocId);
     }
-  }, [documents, drugName, selectedPayers]);
-
-  const payers = useMemo(() => groupPayers(documents), [documents]);
-
-  const activeWorkflow = useMemo(
-    () => WORKFLOWS.find((workflow) => workflow.id === activeWorkflowId) || WORKFLOWS[0],
-    [activeWorkflowId]
-  );
-
-  const activeScenario = useMemo(
-    () => DEMO_SCENARIOS.find((scenario) => scenario.id === activeScenarioId) || DEMO_SCENARIOS[0],
-    [activeScenarioId]
-  );
-
-  const matchingDocuments = useMemo(() => {
-    const lowered = normalizeText(deferredDrugName);
-    if (!lowered) return documents;
-    return documents.filter((doc) => {
-      const policy = normalizeText(doc.policy_name);
-      const likely = normalizeText(doc.likely_drug);
-      return policy.includes(lowered) || likely.includes(lowered);
-    });
-  }, [documents, deferredDrugName]);
-
-  const compareHighlights = useMemo(
-    () => buildCompareHighlights(compareResult?.rows || []),
-    [compareResult]
-  );
-
-  const relatedDrugs = useMemo(() => {
-    const counts = countBy(
-      documents.filter((doc) => doc.likely_drug && normalizeText(doc.likely_drug) !== normalizeText(drugName)),
-      (doc) => doc.likely_drug
-    );
-    return Object.entries(counts)
-      .sort((left, right) => right[1] - left[1])
-      .slice(0, 4)
-      .map(([name]) => name);
-  }, [documents, drugName]);
+  }, [documents, drugName, selectedPayers, validChangePairs]);
 
   function appendMessage(msg) {
     setMessages((current) => [...current, msg].slice(-MAX_MESSAGES));
   }
 
-  function appendErrorMessage(message) {
-    appendMessage(createMessage("assistant", "system", { title: "Request failed", text: message }));
+  async function refreshHistory() {
+    try {
+      const history = await fetchHistory();
+      setHistoryEntries(history);
+    } catch {
+      // keep UI usable
+    }
   }
 
-  function selectWorkflow(workflow) {
-    setActiveWorkflowId(workflow.id);
-    setQuestion(workflow.getQuestion(drugName, selectedPayers));
+  async function handleClearHistory() {
+    setError("");
+    setNotice("");
+    try {
+      const result = await clearHistory();
+      setHistoryEntries([]);
+      setHistoryDetails({});
+      setNotice(result.message || "History cleared.");
+    } catch (requestError) {
+      setError(requestError.message);
+    }
   }
 
   function togglePayer(payer) {
@@ -696,152 +879,122 @@ export default function App() {
     );
   }
 
-  async function executeWorkflow({
-    workflow,
-    nextDrugName,
-    nextQuestion,
-    nextPayers,
-    nextOldDocId,
-    nextNewDocId,
-    messageTitle
-  }) {
-    const trimmedQuestion = nextQuestion.trim();
-    if (!trimmedQuestion) return;
+  function loadUseCase(useCase) {
+    setActiveUseCaseId(useCase.id);
+    setActiveTab(useCase.tab);
+    setDrugName(useCase.drugName);
+    setQuestion(useCase.question);
+    setSelectedPayers(useCase.payerFilters || []);
 
+    if (useCase.tab === "changes") {
+      const explicitPair = useCase.oldDocId && useCase.newDocId
+        ? { oldDocId: useCase.oldDocId, newDocId: useCase.newDocId }
+        : validChangePairs[0];
+      if (explicitPair) {
+        setOldDocId(explicitPair.oldDocId);
+        setNewDocId(explicitPair.newDocId);
+      }
+    }
+
+    setNotice(`Loaded ${useCase.label}. Review the prompt, adjust if needed, and run it manually from the ${useCase.tab} tracker.`);
+    setError("");
+  }
+
+  async function executeAsk(nextDrugName, nextQuestion, nextPayers, title = "Ask tracker") {
+    const result = await askPolicy({
+      drug_name: nextDrugName,
+      question: nextQuestion,
+      payer_filters: nextPayers
+    });
+    setAskResult(result);
+    appendMessage(
+      createMessage("assistant", "ask", {
+        title,
+        text: `Reviewed ${result.records.length} payer policies for ${nextDrugName}.`,
+        question: nextQuestion,
+        records: result.records
+      })
+    );
+  }
+
+  async function executeCompare(nextDrugName, nextQuestion, nextPayers, title = "Compare tracker") {
+    const result = await comparePolicies({
+      drug_name: nextDrugName,
+      question: nextQuestion,
+      payer_filters: nextPayers
+    });
+    setCompareResult(result);
+    appendMessage(
+      createMessage("assistant", "compare", {
+        title,
+        text: `Compared ${result.rows.length} normalized payer rows for ${nextDrugName}.`,
+        rows: result.rows,
+        graphSummary: result.graph_summary || null
+      })
+    );
+  }
+
+  async function executeChanges(nextDrugName, nextQuestion, nextOldDocId, nextNewDocId, title = "Change tracker") {
+    const result = await diffPolicies({
+      drug_name: nextDrugName,
+      old_doc_id: nextOldDocId,
+      new_doc_id: nextNewDocId,
+      question: nextQuestion
+    });
+    setChangeResult(result);
+    appendMessage(
+      createMessage("assistant", "changes", {
+        title,
+        text: `Compared ${getDocumentLabel(documents, nextOldDocId)} against ${getDocumentLabel(documents, nextNewDocId)}.`,
+        changeResult: result
+      })
+    );
+  }
+
+  async function runCurrentTab() {
+    if (!question.trim()) return;
     setError("");
     setNotice("");
     setIsSubmitting(true);
-
-    appendMessage(
-      createMessage("user", "text", {
-        title: messageTitle || workflow.label,
-        text: trimmedQuestion
-      })
-    );
+    appendMessage(createMessage("user", "text", { title: `${activeTab} tracker`, text: question.trim() }));
 
     try {
-      if (workflow.action === "ask") {
-        const result = await askPolicy({
-          drug_name: nextDrugName,
-          question: trimmedQuestion,
-          payer_filters: nextPayers
-        });
-        setAskResult(result);
-        appendMessage(
-          createMessage("assistant", "ask", {
-            title: "Policy answer",
-            text: `Reviewed ${result.records.length} payer policies for ${nextDrugName}.`,
-            records: result.records
-          })
-        );
-        return;
+      if (activeTab === "ask") {
+        await executeAsk(drugName, question, selectedPayers, "Ask tracker");
+      } else if (activeTab === "compare") {
+        await executeCompare(drugName, question, selectedPayers, "Compare tracker");
+      } else if (activeTab === "changes") {
+        await executeChanges(drugName, question, oldDocId, newDocId, "Change tracker");
       }
-
-      if (workflow.action === "compare") {
-        const result = await comparePolicies({
-          drug_name: nextDrugName,
-          question: trimmedQuestion,
-          payer_filters: nextPayers
-        });
-        setCompareResult(result);
-        appendMessage(
-          createMessage("assistant", "compare", {
-            title: "Coverage comparison",
-            text: `Compared ${result.rows.length} normalized payer rows for ${nextDrugName}.`,
-            rows: result.rows,
-            graphSummary: result.graph_summary || null
-          })
-        );
-        return;
-      }
-
-      const result = await diffPolicies({
-        drug_name: nextDrugName,
-        old_doc_id: nextOldDocId,
-        new_doc_id: nextNewDocId,
-        question: trimmedQuestion
-      });
-      setChangeResult(result);
-      appendMessage(
-        createMessage("assistant", "changes", {
-          title: "Policy change watch",
-          text: `Compared ${getDocumentLabel(documents, nextOldDocId)} against ${getDocumentLabel(documents, nextNewDocId)}.`,
-          changeResult: result
-        })
-      );
+      await refreshHistory();
     } catch (requestError) {
       setError(requestError.message);
-      appendErrorMessage(requestError.message);
+      appendMessage(createMessage("assistant", "system", { title: "Request failed", text: requestError.message }));
     } finally {
       setIsSubmitting(false);
     }
   }
 
-  async function handleRunWorkflow() {
-    await executeWorkflow({
-      workflow: activeWorkflow,
-      nextDrugName: drugName,
-      nextQuestion: question,
-      nextPayers: selectedPayers,
-      nextOldDocId: oldDocId,
-      nextNewDocId: newDocId,
-      messageTitle: activeWorkflow.label
-    });
-  }
-
-  async function runScenario(scenario) {
-    const workflow = WORKFLOWS.find((item) => item.id === scenario.workflowId) || WORKFLOWS[0];
-    const scenarioPair = workflow.action === "changes" ? pickScenarioVersionPair(documents, scenario) : null;
-
-    if (workflow.action === "changes" && !scenarioPair) {
-      setError("No version pair could be matched for that demo scenario.");
-      return;
-    }
-
-    setActiveScenarioId(scenario.id);
-    setActiveWorkflowId(workflow.id);
-    setDrugName(scenario.drugName);
-    setQuestion(scenario.question);
-    setSelectedPayers(scenario.payerFilters || []);
-    if (scenarioPair) {
-      setOldDocId(scenarioPair.oldDocId);
-      setNewDocId(scenarioPair.newDocId);
-    }
-
-    await executeWorkflow({
-      workflow,
-      nextDrugName: scenario.drugName,
-      nextQuestion: scenario.question,
-      nextPayers: scenario.payerFilters || [],
-      nextOldDocId: scenarioPair?.oldDocId || oldDocId,
-      nextNewDocId: scenarioPair?.newDocId || newDocId,
-      messageTitle: scenario.title
-    });
-  }
-
   async function handleToggleIndexWarmup() {
     if (!indexSettings) return;
+    setIsUpdatingIndexSettings(true);
     setError("");
     setNotice("");
-    setIsUpdatingIndexSettings(true);
-
     try {
       const next = await updateIndexSettings({ enabled: !indexSettings.enabled });
       setIndexSettings(next);
       setNotice(next.detail);
     } catch (requestError) {
       setError(requestError.message);
-      appendErrorMessage(requestError.message);
     } finally {
       setIsUpdatingIndexSettings(false);
     }
   }
 
   async function handleBuildIndexes() {
+    setIsIndexing(true);
     setError("");
     setNotice("");
-    setIsIndexing(true);
-
     try {
       const targetIds = matchingDocuments.length
         ? matchingDocuments.map((doc) => doc.doc_id)
@@ -857,9 +1010,29 @@ export default function App() {
       );
     } catch (requestError) {
       setError(requestError.message);
-      appendErrorMessage(requestError.message);
     } finally {
       setIsIndexing(false);
+    }
+  }
+
+  async function toggleHistoryDetails(entryId) {
+    if (historyDetails[entryId]) {
+      setHistoryDetails((current) => {
+        const next = { ...current };
+        delete next[entryId];
+        return next;
+      });
+      return;
+    }
+
+    setHistoryLoading((current) => ({ ...current, [entryId]: true }));
+    try {
+      const detail = await fetchHistoryDetail(entryId);
+      setHistoryDetails((current) => ({ ...current, [entryId]: detail }));
+    } catch (requestError) {
+      setError(requestError.message);
+    } finally {
+      setHistoryLoading((current) => ({ ...current, [entryId]: false }));
     }
   }
 
@@ -891,389 +1064,382 @@ export default function App() {
     link.download = `${drugName.toLowerCase().replaceAll(/\s+/g, "_")}_compare.csv`;
     link.click();
     setTimeout(() => URL.revokeObjectURL(url), 100);
-    setNotice("Downloaded compare CSV.");
-  }
-
-  async function copyCompareMarkdown() {
-    if (!compareResult?.rows?.length) return;
-    const header = "| Payer | Coverage | Prior Auth | Step Therapy | Site of Care | Effective Date | Status |";
-    const divider = "|---|---|---|---|---|---|---|";
-    const rows = compareResult.rows.map(
-      (row) =>
-        `| ${row.payer} | ${row.coverage} | ${row.prior_auth} | ${row.step_therapy} | ${row.site_of_care} | ${row.effective_date} | ${row.status} |`
-    );
-    await navigator.clipboard.writeText([header, divider, ...rows].join("\n"));
-    setNotice("Copied compare markdown table.");
   }
 
   if (loading) {
-    return <div className="loading-screen">Loading Anton Rx Track analytics workspace...</div>;
+    return <div className="loading-screen">Loading Anton Rx Track...</div>;
   }
 
   return (
-    <div className="app-shell">
+    <div className="tracker-app">
       <header className="topbar">
-        <div className="brand-block">
-          <span className="brand-mark">Anton Rx Track</span>
-        </div>
-        <nav className="top-nav" aria-label="Primary">
-          {NAV_ITEMS.map((item) => (
-            <button key={item} type="button" className={item === "Analytics" ? "top-nav-item active" : "top-nav-item"}>
-              {item}
+        <div className="brand">Anton Rx Track</div>
+        <nav className="topnav" aria-label="Tracker tabs">
+          {TRACKER_TABS.map((tab) => (
+            <button
+              key={tab.id}
+              type="button"
+              className={activeTab === tab.id ? "topnav-item active" : "topnav-item"}
+              onClick={() => setActiveTab(tab.id)}
+            >
+              <Icon name={tab.id} />
+              <span>{tab.label}</span>
             </button>
           ))}
         </nav>
-        <div className="top-tools">
-          <label className="search-shell" aria-label="Drug search">
-            <Icon name="search" />
-            <input
-              value={drugName}
-              onChange={(event) => setDrugName(event.target.value)}
-              placeholder="Search drug codes..."
-            />
-          </label>
-          <button type="button" className="avatar-button" aria-label="Profile">
-            <Icon name="profile" />
-          </button>
-        </div>
+        <label className="search-box">
+          <Icon name="search" />
+          <input
+            value={drugName}
+            onChange={(event) => setDrugName(event.target.value)}
+            placeholder="Search drug name..."
+          />
+        </label>
       </header>
 
-      <div className="dashboard-layout">
-        <aside className="left-rail">
-          <section className="identity-card">
-            <strong>Anton Rx</strong>
-            <span>Clinical Editorial</span>
+      <div className="shell">
+        <aside className="sidebar">
+          <section className="sidebar-card">
+            <span className="eyebrow">Current focus</span>
+            <h2>{activeTab === "home" ? "Use case library" : `${activeTab[0].toUpperCase()}${activeTab.slice(1)} tracker`}</h2>
+            <p className="muted">
+              {activeTab === "home"
+                ? "Pick a use case, then move to the corresponding tracker and type naturally."
+                : "Review or edit the prefilled prompt, then run the selected tracker manually."}
+            </p>
           </section>
 
-          <nav className="side-nav" aria-label="Workspace">
-            {SIDE_ITEMS.map((item, index) => (
-              <button key={item.id} type="button" className={index === 0 ? "side-item active" : "side-item"}>
-                <Icon name={item.id} />
-                <span>{item.label}</span>
-              </button>
-            ))}
-          </nav>
-
-          <section className="rail-panel">
-            <div className="panel-header">
-              <span className="panel-eyebrow">Active parameters</span>
-            </div>
-
-            <label className="field-block">
-              <span>Drug focus</span>
-              <input value={drugName} onChange={(event) => setDrugName(event.target.value)} />
-            </label>
-
-            <div className="field-block">
-              <span>Payer benchmark</span>
-              <div className="check-list">
-                {payers.map((payer) => (
-                  <label key={payer} className="check-row">
-                    <input
-                      type="checkbox"
-                      checked={selectedPayers.includes(payer)}
-                      onChange={() => togglePayer(payer)}
-                    />
-                    <span>{payer}</span>
-                  </label>
-                ))}
-              </div>
-            </div>
-
-            <div className="field-block">
-              <span>Workflow</span>
-              <div className="workflow-stack">
-                {WORKFLOWS.map((workflow) => (
-                  <button
-                    key={workflow.id}
-                    type="button"
-                    className={workflow.id === activeWorkflowId ? "workflow-pill active" : "workflow-pill"}
-                    onClick={() => selectWorkflow(workflow)}
-                  >
-                    <strong>{workflow.label}</strong>
-                    <small>{workflow.description}</small>
-                  </button>
-                ))}
-              </div>
-            </div>
+          <section className="sidebar-card">
+            <span className="eyebrow">Drug</span>
+            <input value={drugName} onChange={(event) => setDrugName(event.target.value)} />
           </section>
 
-          <section className="rail-panel muted">
-            <div className="panel-header">
-              <span className="panel-eyebrow">Judge path</span>
-            </div>
-            <p className="rail-copy">Single-click strongest storyline for the live demo.</p>
-            <button
-              type="button"
-              className="primary-action"
-              onClick={() => runScenario(DEMO_SCENARIOS[0])}
-              disabled={isSubmitting}
-            >
-              {isSubmitting && activeScenarioId === "judge-primary" ? "Running..." : "Launch Judge Demo"}
-            </button>
-          </section>
-        </aside>
-
-        <main className="main-stage">
-          <section className="headline-row">
-            <div className="headline-copy">
-              <span className="panel-eyebrow">Medical benefit policy tracker</span>
-              <h1>Medical Benefit Drug Policy Tracker</h1>
-              <p>
-                Structured retrieval with PageIndex, payer comparison with graph context, and one-click demo flows mapped to the strongest validated backend cases.
-              </p>
-            </div>
-            <div className="headline-prompt">
-              <span>Current prompt</span>
-              <p>{question || activeScenario.question}</p>
-            </div>
-          </section>
-
-          <section className="scenario-strip" aria-label="One-click demos">
-            {DEMO_SCENARIOS.map((scenario) => (
-              <article
-                key={scenario.id}
-                className={scenario.id === activeScenarioId ? `scenario-card ${scenario.accent} active` : `scenario-card ${scenario.accent}`}
-              >
-                <div className="scenario-head">
-                  <span>{scenario.eyebrow}</span>
-                  <button
-                    type="button"
-                    className="scenario-run"
-                    onClick={() => runScenario(scenario)}
-                    disabled={isSubmitting}
-                  >
-                    {isSubmitting && activeScenarioId === scenario.id ? "Running..." : "Run"}
-                  </button>
-                </div>
-                <h2>{scenario.title}</h2>
-                <p>{scenario.summary}</p>
-                <small>{scenario.detail}</small>
-              </article>
-            ))}
-          </section>
-
-          <HeroSpotlight compareResult={compareResult} askResult={askResult} changeResult={changeResult} />
-
-          <section className="console-card">
-            <div className="console-head">
-              <div>
-                <span className="panel-eyebrow">Analyst console</span>
-                <h2>Drive the backend directly</h2>
-              </div>
-              <StatusPill tone="neutral">{activeWorkflow.label}</StatusPill>
-            </div>
-
-            <div className="console-grid">
-              <label className="field-block">
-                <span>Question</span>
-                <textarea
-                  value={question}
-                  rows={4}
-                  onChange={(event) => setQuestion(event.target.value)}
-                  onKeyDown={(event) => {
-                    if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
-                      event.preventDefault();
-                      handleRunWorkflow();
-                    }
-                  }}
-                />
-              </label>
-
-              <div className="version-stack">
-                <label className="field-block">
-                  <span>Older version</span>
-                  <select value={oldDocId} onChange={(event) => setOldDocId(event.target.value)}>
-                    {documents.map((doc) => (
-                      <option key={doc.doc_id} value={doc.doc_id}>
-                        {doc.policy_name}
-                      </option>
-                    ))}
-                  </select>
+          <section className="sidebar-card">
+            <span className="eyebrow">Payers</span>
+            <div className="payer-list">
+              {payers.map((payer) => (
+                <label key={payer} className="payer-row">
+                  <input
+                    type="checkbox"
+                    checked={selectedPayers.includes(payer)}
+                    onChange={() => togglePayer(payer)}
+                  />
+                  <span>{payer}</span>
                 </label>
-
-                <label className="field-block">
-                  <span>Newer version</span>
-                  <select value={newDocId} onChange={(event) => setNewDocId(event.target.value)}>
-                    {documents.map((doc) => (
-                      <option key={doc.doc_id} value={doc.doc_id}>
-                        {doc.policy_name}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-              </div>
-            </div>
-
-            <div className="console-actions">
-              <span>Press Cmd/Ctrl + Enter or use a demo card for single-click execution.</span>
-              <button type="button" className="run-button" onClick={handleRunWorkflow} disabled={isSubmitting}>
-                {isSubmitting ? "Running..." : `Run ${activeWorkflow.label}`}
-                <Icon name="send" />
-              </button>
-            </div>
-          </section>
-
-          <section className="thread-panel">
-            {messages.map((message) => (
-              <MessageBubble key={message.id} message={message} />
-            ))}
-          </section>
-        </main>
-
-        <aside className="right-rail">
-          <section className="rail-panel insight">
-            <div className="panel-header">
-              <span className="panel-eyebrow">Market insights</span>
-            </div>
-
-            <div className="metric-column">
-              <MetricTile
-                label="Runtime"
-                value={graphStatus?.connected ? "Neo4j" : "SQLite"}
-                detail={graphStatus?.detail || "Local-first mode"}
-                tone={graphStatus?.connected ? "success" : "neutral"}
-              />
-              <MetricTile
-                label="Indexer"
-                value={indexSettings?.enabled ? "Autobuild on" : "Manual"}
-                detail={indexSettings?.detail || "PageIndex warmup"}
-                tone={indexSettings?.enabled ? "warning" : "neutral"}
-              />
-              <MetricTile
-                label="Scenario state"
-                value={metricTrendLabel(graphStatus, indexSettings)}
-                detail={activeScenario.title}
-                tone="neutral"
-              />
-            </div>
-          </section>
-
-          <section className="rail-panel insight">
-            <div className="panel-header">
-              <span className="panel-eyebrow">Coverage pulse</span>
-            </div>
-
-            {compareHighlights.length ? (
-              <div className="metric-column">
-                {compareHighlights.map((item) => (
-                  <MetricTile key={item.label} {...item} />
-                ))}
-              </div>
-            ) : (
-              <p className="muted">Run the judge demo or any compare scenario to populate payer metrics.</p>
-            )}
-
-            {compareResult?.graph_summary ? (
-              <div className="context-panel">
-                <strong>Graph summary</strong>
-                <p className="muted">{compareResult.graph_summary.status_message}</p>
-                <p className="muted">Payers: {formatList(compareResult.graph_summary.payer_names)}</p>
-              </div>
-            ) : null}
-
-            {compareResult?.rows?.length ? (
-              <div className="button-row">
-                <button type="button" className="secondary-action" onClick={downloadCompareCsv}>
-                  Download CSV
-                </button>
-                <button type="button" className="secondary-action" onClick={copyCompareMarkdown}>
-                  Copy Markdown
-                </button>
-              </div>
-            ) : null}
-          </section>
-
-          <section className="rail-panel insight">
-            <div className="panel-header">
-              <span className="panel-eyebrow">Operations</span>
-            </div>
-
-            <div className="field-block">
-              <span>Background warmup</span>
-              <button
-                type="button"
-                className={indexSettings?.enabled ? "workflow-pill active" : "workflow-pill"}
-                onClick={handleToggleIndexWarmup}
-                disabled={isUpdatingIndexSettings}
-              >
-                <strong>{isUpdatingIndexSettings ? "Updating..." : indexSettings?.enabled ? "Autobuild on" : "Autobuild off"}</strong>
-                <small>Build missing PageIndex trees after backend startup.</small>
-              </button>
-            </div>
-
-            <button type="button" className="secondary-action full" onClick={handleBuildIndexes} disabled={isIndexing}>
-              {isIndexing ? "Warming indexes..." : "Warm PageIndex for current drug"}
-            </button>
-
-            {indexResult?.results?.length ? (
-              <div className="mini-log">
-                {indexResult.results.slice(0, 5).map((result) => (
-                  <div key={result.doc_id} className="mini-log-row">
-                    <span>{result.doc_id}</span>
-                    <StatusPill tone={result.status === "completed" || result.status === "cached" ? "success" : "warning"}>
-                      {result.status}
-                    </StatusPill>
-                  </div>
-                ))}
-              </div>
-            ) : null}
-          </section>
-
-          <section className="rail-panel insight">
-            <div className="panel-header">
-              <span className="panel-eyebrow">Related molecules</span>
-            </div>
-
-            <ul className="related-list">
-              {relatedDrugs.length ? (
-                relatedDrugs.map((item) => (
-                  <li key={item}>
-                    <span>{item}</span>
-                    <span>→</span>
-                  </li>
-                ))
-              ) : (
-                <li>
-                  <span>No related molecules surfaced yet.</span>
-                </li>
-              )}
-            </ul>
-
-            <div className="visual-card">
-              <div className="visual-noise" />
-              <p>
-                “Structured retrieval keeps the evidence anchored to the active policy sections instead of background references.”
-              </p>
-            </div>
-          </section>
-
-          <section className="rail-panel insight">
-            <div className="panel-header">
-              <span className="panel-eyebrow">Corpus slice</span>
-            </div>
-            <div className="document-list">
-              {(matchingDocuments.length ? matchingDocuments : documents).slice(0, 6).map((doc) => (
-                <article key={doc.doc_id} className="document-card">
-                  <div className="card-head">
-                    <div>
-                      <h4>{doc.payer}</h4>
-                      <p className="muted">{doc.policy_name}</p>
-                    </div>
-                    <StatusPill tone="neutral">{doc.version_label || "current"}</StatusPill>
-                  </div>
-                  <div className="signal-row">
-                    <span>{doc.document_pattern}</span>
-                    <span>{doc.likely_drug || "multi-drug"}</span>
-                  </div>
-                </article>
               ))}
             </div>
+          </section>
+
+          <section className="sidebar-card">
+            <span className="eyebrow">Indexing</span>
+            <button
+              type="button"
+              className={indexSettings?.enabled ? "soft-button active" : "soft-button"}
+              onClick={handleToggleIndexWarmup}
+              disabled={isUpdatingIndexSettings}
+            >
+              {isUpdatingIndexSettings ? "Updating..." : indexSettings?.enabled ? "Autobuild on" : "Autobuild off"}
+            </button>
+            <button type="button" className="soft-button" onClick={handleBuildIndexes} disabled={isIndexing}>
+              {isIndexing ? "Warming indexes..." : "Warm current corpus"}
+            </button>
+            {indexResult ? <small className="muted">{indexResult.results.length} index actions recorded.</small> : null}
           </section>
 
           {notice ? <div className="notice-box">{notice}</div> : null}
           {error ? <div className="error-box">{error}</div> : null}
         </aside>
+
+        <main className="content">
+          {activeTab === "home" ? (
+            <>
+              <section className="hero">
+                <div className="hero-copy">
+                  <span className="eyebrow">Hero</span>
+                  <h1>Choose a use case, then type naturally</h1>
+                  <p>
+                    The home screen is now a guided use-case library. Each card loads the right tracker, drug, payer set, and starter query, but nothing auto-runs.
+                  </p>
+                  <button
+                    type="button"
+                    className="primary-button"
+                    onClick={() => loadUseCase(USECASE_SECTIONS[1].cases[0])}
+                  >
+                    <Icon name="launch" />
+                    <span>Open Recommended Compare Use Case</span>
+                  </button>
+                </div>
+                <div className="hero-metrics">
+                  <MetricTile label="Policies" value={documents.length} detail="documents discovered" />
+                  <MetricTile label="Payers" value={payers.length} detail="active in corpus" />
+                  <MetricTile
+                    label="History"
+                    value={historyEntries.length}
+                    detail="saved backend runs"
+                  />
+                </div>
+              </section>
+
+              {USECASE_SECTIONS.map((section) => (
+                <section key={section.id} className="usecase-section">
+                  <div className="section-header">
+                    <div>
+                      <span className="eyebrow">{section.id}</span>
+                      <h2>{section.title}</h2>
+                      <p className="muted">{section.description}</p>
+                    </div>
+                    <StatusPill tone="neutral">{section.cases.length} use cases</StatusPill>
+                  </div>
+
+                  <div className="usecase-grid">
+                    {section.cases.map((useCase) => (
+                      <article
+                        key={useCase.id}
+                        className={activeUseCaseId === useCase.id ? "usecase-card active" : "usecase-card"}
+                      >
+                        <div className="result-head">
+                          <div>
+                            <h3>{useCase.label}</h3>
+                            <p className="muted">{useCase.drugName}</p>
+                          </div>
+                          <StatusPill tone="neutral">{useCase.tab}</StatusPill>
+                        </div>
+                        <p>{useCase.question}</p>
+                        <div className="tag-row">
+                          <span>Payers: {formatList(useCase.payerFilters)}</span>
+                          {useCase.oldDocId ? <span>Version-aware</span> : null}
+                        </div>
+                        <button type="button" className="soft-button" onClick={() => loadUseCase(useCase)}>
+                          Open in {useCase.tab}
+                        </button>
+                      </article>
+                    ))}
+                  </div>
+                </section>
+              ))}
+            </>
+          ) : null}
+
+          {["ask", "compare", "changes"].includes(activeTab) ? (
+            <>
+              <section className="tracker-header">
+                <div>
+                  <span className="eyebrow">Tracker</span>
+                  <h1>
+                    {activeTab === "ask" && "Ask tracker"}
+                    {activeTab === "compare" && "Compare tracker"}
+                    {activeTab === "changes" && "Change tracker"}
+                  </h1>
+                  <p>
+                    {activeTab === "ask" && "Readable summaries first, detailed extraction second, evidence pages linked back to source PDFs."}
+                    {activeTab === "compare" && "Compare normalized payer rows and export the output when needed."}
+                    {activeTab === "changes" && "Use detected valid pairs or choose explicit documents for version review."}
+                  </p>
+                </div>
+              </section>
+
+              <section className="composer-card">
+                <label className="field">
+                  <span>Question</span>
+                  <textarea
+                    value={question}
+                    onChange={(event) => setQuestion(event.target.value)}
+                    rows={4}
+                    onKeyDown={(event) => {
+                      if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
+                        event.preventDefault();
+                        runCurrentTab();
+                      }
+                    }}
+                  />
+                </label>
+
+                {activeTab === "changes" ? (
+                  <>
+                    <label className="field">
+                      <span>Detected valid pairs</span>
+                      <select
+                        value={validChangePairs.find((pair) => pair.oldDocId === oldDocId && pair.newDocId === newDocId)?.pairId || ""}
+                        onChange={(event) => {
+                          const selected = validChangePairs.find((pair) => pair.pairId === event.target.value);
+                          if (!selected) return;
+                          setOldDocId(selected.oldDocId);
+                          setNewDocId(selected.newDocId);
+                          setDrugName(selected.drugName);
+                        }}
+                      >
+                        {validChangePairs.length ? (
+                          validChangePairs.map((pair) => (
+                            <option key={pair.pairId} value={pair.pairId}>
+                              {pair.oldLabel} → {pair.newLabel}
+                            </option>
+                          ))
+                        ) : (
+                          <option value="">No valid version pairs found</option>
+                        )}
+                      </select>
+                    </label>
+
+                    <div className="version-pair">
+                      <label className="field">
+                        <span>Older version</span>
+                        <select value={oldDocId} onChange={(event) => setOldDocId(event.target.value)}>
+                          {documents.map((doc) => (
+                            <option key={doc.doc_id} value={doc.doc_id}>
+                              {doc.policy_name}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <label className="field">
+                        <span>Newer version</span>
+                        <select value={newDocId} onChange={(event) => setNewDocId(event.target.value)}>
+                          {documents.map((doc) => (
+                            <option key={doc.doc_id} value={doc.doc_id}>
+                              {doc.policy_name}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                    </div>
+                  </>
+                ) : null}
+
+                <div className="composer-actions">
+                  <span className="muted">Press Cmd/Ctrl + Enter to run this tracker.</span>
+                  <button type="button" className="primary-button" onClick={runCurrentTab} disabled={isSubmitting}>
+                    <Icon name="launch" />
+                    <span>{isSubmitting ? "Running..." : `Run ${activeTab}`}</span>
+                  </button>
+                </div>
+              </section>
+
+              <section className="tracker-grid">
+                <div className="thread-panel">
+                  {messages.map((message) => (
+                    <MessageBubble key={message.id} message={message} />
+                  ))}
+                </div>
+
+                <aside className="insight-panel">
+                  {activeTab === "compare" ? (
+                    <article className="panel-card">
+                      <div className="result-head">
+                        <h3>Compare signals</h3>
+                        <StatusPill tone="neutral">{compareResult?.rows?.length || 0} rows</StatusPill>
+                      </div>
+                      {compareHighlights.length ? (
+                        <div className="metric-grid compact">
+                          {compareHighlights.map((item) => (
+                            <MetricTile key={item.label} {...item} />
+                          ))}
+                        </div>
+                      ) : (
+                        <p className="muted">Run compare to populate payer metrics.</p>
+                      )}
+                      {compareResult?.rows?.length ? (
+                        <button type="button" className="soft-button" onClick={downloadCompareCsv}>
+                          Download CSV
+                        </button>
+                      ) : null}
+                    </article>
+                  ) : null}
+
+                  {activeTab === "ask" && askResult?.records?.length ? (
+                    <article className="panel-card">
+                      <div className="result-head">
+                        <h3>Ask summary</h3>
+                        <StatusPill tone="success">{askResult.records.length} records</StatusPill>
+                      </div>
+                      <p>{buildReadableAskSummary(askResult.records[0])}</p>
+                    </article>
+                  ) : null}
+
+                  {activeTab === "changes" ? (
+                    <article className="panel-card">
+                      <div className="result-head">
+                        <h3>Available change pairs</h3>
+                        <StatusPill tone="neutral">{validChangePairs.length}</StatusPill>
+                      </div>
+                      {validChangePairs.length ? (
+                        <div className="mini-list">
+                          {validChangePairs.slice(0, 6).map((pair) => (
+                            <div key={pair.pairId} className="mini-list-item">
+                              <strong>{pair.payer}</strong>
+                              <span>{pair.oldLabel} → {pair.newLabel}</span>
+                            </div>
+                          ))}
+                        </div>
+                      ) : (
+                        <p className="muted">No valid version pairs detected in the current corpus.</p>
+                      )}
+                    </article>
+                  ) : null}
+
+                  <article className="panel-card">
+                    <div className="result-head">
+                      <h3>Relevant documents</h3>
+                      <StatusPill tone="neutral">{matchingDocuments.length || documents.length}</StatusPill>
+                    </div>
+                    <div className="document-list">
+                      {(matchingDocuments.length ? matchingDocuments : documents).slice(0, 6).map((doc) => (
+                        <article key={doc.doc_id} className="document-card">
+                          <div className="result-head">
+                            <div>
+                              <h4>{doc.payer}</h4>
+                              <p className="muted">{doc.policy_name}</p>
+                            </div>
+                            <StatusPill tone="neutral">{doc.version_label || "current"}</StatusPill>
+                          </div>
+                          <div className="tag-row">
+                            <span>{doc.document_pattern}</span>
+                            <span>{doc.likely_drug || "multi-drug"}</span>
+                          </div>
+                        </article>
+                      ))}
+                    </div>
+                  </article>
+                </aside>
+              </section>
+            </>
+          ) : null}
+
+          {activeTab === "history" ? (
+            <section className="history-panel">
+              <div className="section-header">
+                <div>
+                  <span className="eyebrow">History</span>
+                  <h1>Saved backend runs</h1>
+                  <p className="muted">Open any entry to see the stored explanation, response details, and request payload.</p>
+                </div>
+                <div className="history-controls">
+                  <StatusPill tone="neutral">{historyEntries.length} entries</StatusPill>
+                  <button type="button" className="soft-button inline" onClick={handleClearHistory} disabled={!historyEntries.length}>
+                    Clear history
+                  </button>
+                </div>
+              </div>
+
+              {recentHistory.length ? (
+                <div className="history-list">
+                  {recentHistory.map((entry) => (
+                    <HistoryCard
+                      key={entry.history_id}
+                      entry={entry}
+                      detail={historyDetails[entry.history_id]}
+                      loading={historyLoading[entry.history_id]}
+                      onToggle={() => toggleHistoryDetails(entry.history_id)}
+                    />
+                  ))}
+                </div>
+              ) : (
+                <article className="panel-card">
+                  <p className="muted">No history yet. Run any tracker to persist a backend event.</p>
+                </article>
+              )}
+            </section>
+          ) : null}
+        </main>
       </div>
     </div>
   );

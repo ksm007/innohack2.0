@@ -1,4 +1,4 @@
-const API_URL = import.meta.env.VITE_API_URL || "http://127.0.0.1:8000/api";
+export const API_URL = import.meta.env.VITE_API_URL || "http://127.0.0.1:8000/api";
 
 async function request(path, options = {}) {
   const response = await fetch(`${API_URL}${path}`, {
@@ -60,4 +60,29 @@ export function updateIndexSettings(payload) {
 
 export function fetchGraphStatus() {
   return request("/graph/status");
+}
+
+export function fetchHistory() {
+  return request("/history");
+}
+
+export function fetchHistoryDetail(historyId) {
+  return request(`/history/${historyId}`);
+}
+
+export function clearHistory() {
+  return request("/history", {
+    method: "DELETE"
+  });
+}
+
+export function fetchEvidenceSummary(payload) {
+  return request("/evidence/summary", {
+    method: "POST",
+    body: JSON.stringify(payload)
+  });
+}
+
+export function documentPdfUrl(docId, page = 1) {
+  return `${API_URL}/documents/${docId}/pdf#page=${page}`;
 }

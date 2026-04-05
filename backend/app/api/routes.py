@@ -1,4 +1,7 @@
-from fastapi import APIRouter
+from pathlib import Path
+
+from fastapi import APIRouter, HTTPException
+from fastapi.responses import FileResponse
 
 from ..models.schemas import (
     AskRequest,
@@ -8,11 +11,16 @@ from ..models.schemas import (
     CompareRequest,
     CompareResponse,
     DocumentSummary,
+    EvidenceSummaryRequest,
+    EvidenceSummaryResponse,
     GraphStatus,
+    HistoryDetailResponse,
+    HistoryDeleteResponse,
     IndexBuildRequest,
     IndexBuildResponse,
     IndexSettingsResponse,
     IndexSettingsUpdateRequest,
+    RequestHistoryEntry,
 )
 from ..services.comparison_service import ComparisonService
 from ..services.document_service import DocumentService
@@ -36,6 +44,7 @@ comparison_service = ComparisonService(
     document_service=document_service,
     graph_service=graph_service,
 )
+history_repository = policy_service.repository
 
 
 @router.get("/health")
@@ -51,6 +60,47 @@ def graph_status() -> GraphStatus:
 @router.get("/documents", response_model=list[DocumentSummary])
 def list_documents() -> list[DocumentSummary]:
     return document_service.refresh_documents()
+
+
+@router.get("/documents/{doc_id}/pdf")
+def get_document_pdf(doc_id: str) -> FileResponse:
+    document = document_service.get_document(doc_id)
+    pdf_path = Path(document.path)
+    if not pdf_path.exists():
+        raise HTTPException(status_code=404, detail="PDF not found.")
+    return FileResponse(
+        path=pdf_path,
+        media_type="application/pdf",
+        filename=pdf_path.name,
+        content_disposition_type="inline",
+    )
+
+
+@router.get("/history", response_model=list[RequestHistoryEntry])
+def list_history(kind: str | None = None, limit: int = 50) -> list[RequestHistoryEntry]:
+    return history_repository.list_request_history(kind=kind, limit=limit)
+
+
+@router.get("/history/{history_id}", response_model=HistoryDetailResponse)
+def get_history(history_id: str) -> HistoryDetailResponse:
+    history_entry = history_repository.get_request_history(history_id)
+    if not history_entry:
+        raise HTTPException(status_code=404, detail="History entry not found.")
+    return history_entry
+
+
+@router.delete("/history", response_model=HistoryDeleteResponse)
+def clear_history() -> HistoryDeleteResponse:
+    deleted = history_repository.clear_request_history()
+    return HistoryDeleteResponse(deleted=deleted, message=f"Cleared {deleted} history entries.")
+
+
+@router.delete("/history/{history_id}", response_model=HistoryDeleteResponse)
+def delete_history(history_id: str) -> HistoryDeleteResponse:
+    deleted = history_repository.delete_request_history(history_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="History entry not found.")
+    return HistoryDeleteResponse(deleted=1, message="Deleted history entry.")
 
 
 @router.post("/index/build", response_model=IndexBuildResponse)
@@ -73,6 +123,26 @@ def update_index_settings(payload: IndexSettingsUpdateRequest) -> IndexSettingsR
     documents = document_service.refresh_documents()
     enabled, running, detail = pageindex_service.set_warmup_enabled(payload.enabled, documents)
     return IndexSettingsResponse(enabled=enabled, running=running, detail=detail)
+
+
+@router.post("/evidence/summary", response_model=EvidenceSummaryResponse)
+def summarize_evidence(payload: EvidenceSummaryRequest) -> EvidenceSummaryResponse:
+    document = document_service.get_document(payload.doc_id)
+    summary, source_method = policy_service.openai_service.summarize_evidence(
+        document=document,
+        page=payload.page,
+        section=payload.section,
+        snippet=payload.snippet,
+        question=payload.question,
+    )
+    return EvidenceSummaryResponse(
+        doc_id=document.doc_id,
+        page=payload.page,
+        section=payload.section,
+        pdf_url=f"/api/documents/{document.doc_id}/pdf#page={payload.page}",
+        summary=summary,
+        source_method=source_method,
+    )
 
 
 @router.post("/ask", response_model=AskResponse)
