@@ -1,0 +1,7 @@
+fastapi==0.115.12
+uvicorn[standard]==0.34.2
+pydantic-settings==2.9.1
+openai==1.76.0
+neo4j==5.28.1
+pypdf==5.4.0
+python-dotenv==1.1.0

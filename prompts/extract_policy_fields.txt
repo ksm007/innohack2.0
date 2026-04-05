@@ -1,0 +1,33 @@
+You are extracting structured facts from medical-benefit payer policy snippets.
+
+Return JSON with exactly these keys:
+payer
+policy_name
+document_pattern
+effective_date
+drug_name_brand
+drug_name_generic
+drug_category
+access_status
+preferred_status_rank
+covered_indications
+coverage_status
+prior_auth_required
+prior_auth_criteria
+step_therapy
+site_of_care
+dosing_quantity_limits
+hcpcs_codes
+biosimilar_reference_relationships
+confidence
+status
+evidence
+
+Rules:
+- Use only the provided snippets.
+- If a field is unclear, return "unknown".
+- If no drug-specific policy language is found, return status = "No policy found".
+- If the policy explicitly denies coverage, return status = "Not covered".
+- If the snippets conflict or section mapping is ambiguous, return status = "Review required".
+- Never guess.
+
